@@ -230,7 +230,7 @@ def main(
 
     model.eval()
 
-    tokenizer = get_tokenizer(tokenizer_path, checkpoint_path)
+    tokenizer = get_tokenizer(checkpoint_path)
 
     torch.manual_seed(1234)
 

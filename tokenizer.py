@@ -1,12 +1,14 @@
+import json
 import os
 import sentencepiece as spm
 import tiktoken
 from tiktoken.load import load_tiktoken_bpe
+from tokenizers import Tokenizer
 from pathlib import Path
 from typing import Dict
 
 class TokenizerInterface:
-    def __init__(self, model_path):
+    def __init__(self, model_path: Path):
         self.model_path = model_path
 
     def encode(self, text):
@@ -37,6 +39,34 @@ class SentencePieceWrapper(TokenizerInterface):
 
     def eos_id(self):
         return self.processor.eos_id()
+
+class HfTokenizerWrapper(TokenizerInterface):
+    def __init__(self, checkpoint_dir: Path):
+        super().__init__(checkpoint_dir / "tokenizer.json")
+        tokenizer_path = checkpoint_dir / "tokenizer.json"
+        assert tokenizer_path.is_file(), str(tokenizer_path)
+        self.processor: Tokenizer = Tokenizer.from_file(str(tokenizer_path))
+
+        config_loc: Path = checkpoint_dir / "tokenizer_config.json"
+        config_json = json.loads(config_loc.read_text())
+        self.bos_token_str = config_json["bos_token"]
+        self.eos_token_str = config_json["eos_token"]
+        self.bos_token_id = self.processor.token_to_id(self.bos_token_str)
+        self.eos_token_id = self.processor.token_to_id(self.eos_token_str)
+
+    def encode(self, text):
+        res = self.processor.encode(text).ids
+        breakpoint()
+        return res
+
+    def decode(self, tokens):
+        return self.processor.decode(tokens)
+
+    def bos_id(self):
+        return self.bos_token_id
+
+    def eos_id(self):
+        return self.eos_token_id
 
 class TiktokenWrapper(TokenizerInterface):
     """
@@ -94,7 +124,7 @@ class TiktokenWrapper(TokenizerInterface):
     def eos_id(self):
         return self._eos_id
 
-def get_tokenizer(tokenizer_model_path, model_name):
+def get_tokenizer(checkpoint_dir: Path):
     """
     Factory function to get the appropriate tokenizer based on the model name.
     
@@ -106,7 +136,16 @@ def get_tokenizer(tokenizer_model_path, model_name):
     - TokenizerInterface: An instance of a tokenizer.
     """
 
-    if "llama-3" in str(model_name).lower():
-        return TiktokenWrapper(tokenizer_model_path)
+    tokenizer_model_path = checkpoint_dir / "tokenizer.model"
+    tokenizer_config_path = checkpoint_dir / "tokenizer_config.json"
+    if tokenizer_model_path.is_file():
+        print("Found tokenizer.model")
+        if "llama-3" in str(checkpoint_dir).lower():
+            return TiktokenWrapper(tokenizer_model_path)
+        else:
+            return SentencePieceWrapper(tokenizer_model_path)
+    elif tokenizer_config_path.is_file():
+        print("Found tokenizer_config.json")
+        return HfTokenizerWrapper(checkpoint_dir)
     else:
-        return SentencePieceWrapper(tokenizer_model_path)
+        raise ValueError(f"Tokenizer not found in {checkpoint_dir}")

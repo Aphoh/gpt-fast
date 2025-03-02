@@ -50,27 +50,22 @@ def convert_hf_checkpoint(
       except AssertionError:
         print(f"{model_map_json_pytorch} not found")
    
-    if model_map_json is None: raise Exception("No model map found!")
+    if model_map_json is not None: 
+        with open(model_map_json) as json_map:
+            bin_index = json.load(json_map)
 
-    with open(model_map_json) as json_map:
-        bin_index = json.load(json_map)
-
-    weight_map = {
-        "model.embed_tokens.weight": "tok_embeddings.weight",
-        "model.layers.{}.self_attn.q_proj.weight": "layers.{}.attention.wq.weight",
-        "model.layers.{}.self_attn.k_proj.weight": "layers.{}.attention.wk.weight",
-        "model.layers.{}.self_attn.v_proj.weight": "layers.{}.attention.wv.weight",
-        "model.layers.{}.self_attn.o_proj.weight": "layers.{}.attention.wo.weight",
-        'model.layers.{}.self_attn.rotary_emb.inv_freq': None,
-        'model.layers.{}.mlp.gate_proj.weight': 'layers.{}.feed_forward.w1.weight',
-        "model.layers.{}.mlp.up_proj.weight": "layers.{}.feed_forward.w3.weight",
-        "model.layers.{}.mlp.down_proj.weight": "layers.{}.feed_forward.w2.weight",
-        "model.layers.{}.input_layernorm.weight": "layers.{}.attention_norm.weight",
-        "model.layers.{}.post_attention_layernorm.weight": "layers.{}.ffn_norm.weight",
-        "model.norm.weight": "norm.weight",
-        "lm_head.weight": "output.weight",
-    }
-    bin_files = {checkpoint_dir / bin for bin in bin_index["weight_map"].values()}
+        bin_files = {checkpoint_dir / bin for bin in bin_index["weight_map"].values()}
+    else:
+        bin_file = checkpoint_dir / "pytorch_model.bin"
+        st_file = checkpoint_dir / "model.safetensors"
+        if bin_file.is_file():
+            print("Found pytorch_model.bin")
+            bin_files = {bin_file}
+        elif st_file.is_file():
+            print("Found model.safetensors")
+            bin_files = {st_file}
+        else:
+            raise FileNotFoundError(f"Could not find pytorch_model.bin or model.safetensors in {checkpoint_dir}")
 
     def permute(w, n_head):
         dim = config.dim
@@ -89,6 +84,23 @@ def convert_hf_checkpoint(
            state_dict = torch.load(str(file), map_location="cpu", mmap=True, weights_only=True)
            merged_result.update(state_dict)
     final_result = {}
+
+    weight_map = {
+        "model.embed_tokens.weight": "tok_embeddings.weight",
+        "model.layers.{}.self_attn.q_proj.weight": "layers.{}.attention.wq.weight",
+        "model.layers.{}.self_attn.k_proj.weight": "layers.{}.attention.wk.weight",
+        "model.layers.{}.self_attn.v_proj.weight": "layers.{}.attention.wv.weight",
+        "model.layers.{}.self_attn.o_proj.weight": "layers.{}.attention.wo.weight",
+        'model.layers.{}.self_attn.rotary_emb.inv_freq': None,
+        'model.layers.{}.mlp.gate_proj.weight': 'layers.{}.feed_forward.w1.weight',
+        "model.layers.{}.mlp.up_proj.weight": "layers.{}.feed_forward.w3.weight",
+        "model.layers.{}.mlp.down_proj.weight": "layers.{}.feed_forward.w2.weight",
+        "model.layers.{}.input_layernorm.weight": "layers.{}.attention_norm.weight",
+        "model.layers.{}.post_attention_layernorm.weight": "layers.{}.ffn_norm.weight",
+        "model.norm.weight": "norm.weight",
+        "lm_head.weight": "output.weight",
+    }
+    
     for key, value in merged_result.items():
         if "layers" in key:
             abstract_key = re.sub(r'(\d+)', '{}', key)

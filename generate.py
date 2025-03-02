@@ -302,9 +302,6 @@ def main(
     """
     assert checkpoint_path.is_file(), checkpoint_path
 
-    tokenizer_path = checkpoint_path.parent / "tokenizer.model"
-    assert tokenizer_path.is_file(), str(tokenizer_path)
-
     global print
     from tp import maybe_init_dist
     rank = maybe_init_dist()
@@ -331,7 +328,7 @@ def main(
     device_sync(device=device) # MKG
     print(f"Time to load model: {time.time() - t0:.02f} seconds")
 
-    tokenizer = get_tokenizer(tokenizer_path, checkpoint_path)
+    tokenizer = get_tokenizer(checkpoint_path.parent)
 
     if isinstance(prompt, str):
         encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
