@@ -44,6 +44,7 @@ class ModelArgs:
     rope_base: float = 10000
     norm_eps: float = 1e-5
     rope_scaling: Optional[dict] = None
+    tie_embedding_weights: bool = False
 
     def __post_init__(self):
         if self.n_local_heads == -1:
@@ -81,6 +82,7 @@ transformer_configs = {
     "stories15M": dict(n_layer=6, n_head=6, dim=288),
     "stories110M": dict(n_layer=12, n_head=12, dim=768),
 
+    "llama-3.2-1b": dict(block_size=131072, n_layer=16, n_head=32, n_local_heads=8, dim=2048, intermediate_size=8192, vocab_size=128256, rope_base=500000, tie_embedding_weights=True),
     "llama-3-8b": dict(block_size=8192, n_layer=32, n_head=32, n_local_heads=8, dim=4096, intermediate_size=14336, vocab_size=128256, rope_base=500000),
     "llama-3-70b": dict(block_size=8192, n_layer=80, n_head=64, n_local_heads=8, dim=8192, intermediate_size=28672, vocab_size=128256, rope_base=500000),
     "llama-3.1-8b": dict(block_size=131072, n_layer=32, n_head=32, n_local_heads=8, dim=4096, intermediate_size=14336, vocab_size=128256, rope_base=500000,
@@ -121,6 +123,8 @@ class Transformer(nn.Module):
         self.layers = nn.ModuleList(TransformerBlock(config) for _ in range(config.n_layer))
         self.norm = RMSNorm(config.dim, eps=config.norm_eps)
         self.output = nn.Linear(config.dim, config.vocab_size, bias=False)
+        if config.tie_embedding_weights:
+            self.output.weight = self.tok_embeddings.weight
 
         self.freqs_cis: Optional[Tensor] = None
         self.mask_cache: Optional[Tensor] = None

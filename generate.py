@@ -14,6 +14,8 @@ import torch._dynamo.config
 import torch._inductor.config
 from torch.nn.attention.flex_attention import BlockMask, create_block_mask
 
+from util import load_model
+
 def device_sync(device):
     if "cuda" in device:
         torch.cuda.synchronize(device)
@@ -249,10 +251,7 @@ def _load_model(checkpoint_path, device, precision, use_tp):
         simple_quantizer = WeightOnlyInt4QuantHandler(model, groupsize)
         model = simple_quantizer.convert_for_runtime()
 
-    checkpoint = torch.load(str(checkpoint_path), mmap=True, weights_only=True)
-    if "model" in checkpoint and "stories" in str(checkpoint_path):
-        checkpoint = checkpoint["model"]
-    model.load_state_dict(checkpoint, assign=True)
+    model = load_model(model, checkpoint_path, precision=precision, device=device)
 
     if use_tp:
         from tp import apply_tp

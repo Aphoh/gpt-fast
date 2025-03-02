@@ -10,6 +10,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from tokenizer import get_tokenizer
+from util import load_model
 
 try:
     from GPTQ import GenericGPTQRunner, InputRecorder
@@ -550,9 +551,7 @@ def quantize(
     with torch.device('meta'):
         model = Transformer.from_name(checkpoint_path.parent.name)
 
-    checkpoint = torch.load(str(checkpoint_path), mmap=True, weights_only=True)
-    model.load_state_dict(checkpoint, assign=True)
-    model = model.to(dtype=precision, device=device)
+    model = load_model(model, checkpoint_path, precision, device)
 
     if mode == 'int8':
         print("Quantizing model weights for int8 weight-only symmetric per-channel quantization")
