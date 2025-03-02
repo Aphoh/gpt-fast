@@ -3,20 +3,17 @@
 
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
+from functools import partial
 import math
 from dataclasses import dataclass
-from typing import Optional
+from typing import Literal, Optional
 
 import torch
 import torch.nn as nn
 from torch import Tensor
 from torch.nn import functional as F
-from torch.nn.attention.flex_attention import (
-    _mask_mod_signature,
-    BlockMask,
-    flex_attention,
-)
-
+from torch.nn.attention.flex_attention import _mask_mod_signature, BlockMask
+from util import flex_attention_maybe_pad
 
 def find_multiple(n: int, k: int) -> int:
     if n % k == 0:
@@ -37,14 +34,20 @@ class ModelArgs:
     vocab_size: int = 32000
     n_layer: int = 32
     n_head: int = 32
+    head_dim: int = None
     dim: int = 4096
     intermediate_size: int = None
+    glu: bool = True
+    attn_bias: bool = False
+    mlp_bias: bool = False
     n_local_heads: int = -1
-    head_dim: int = 64
     rope_base: float = 10000
     norm_eps: float = 1e-5
     rope_scaling: Optional[dict] = None
     tie_embedding_weights: bool = False
+    norm_type: Literal["rmsnorm", "layernorm"] = "rmsnorm"
+    act_fn: Literal["silu", "gelu_approx"] = "silu"
+
 
     def __post_init__(self):
         if self.n_local_heads == -1:
@@ -53,7 +56,8 @@ class ModelArgs:
             hidden_dim = 4 * self.dim
             n_hidden = int(2 * hidden_dim / 3)
             self.intermediate_size = find_multiple(n_hidden, 256)
-        self.head_dim = self.dim // self.n_head
+        if self.head_dim is None:
+            self.head_dim = self.dim // self.n_head
 
     @classmethod
     def from_name(cls, name: str):
@@ -71,6 +75,16 @@ class ModelArgs:
         return cls(**transformer_configs[config[0]])
 
 
+    def make_norm(self, dim=None):
+        dim = dim or self.dim
+        if self.norm_type == "rmsnorm":
+            return RMSNorm(dim, eps=self.norm_eps)
+        elif self.norm_type == "layernorm":
+            return nn.LayerNorm(dim, eps=self.norm_eps)
+        else:
+            raise ValueError(f"Unknown norm type: {self.norm_type}")
+
+
 transformer_configs = {
     "CodeLlama-7b-Python-hf": dict(block_size=16384, vocab_size=32000, n_layer=32, dim = 4096, rope_base=1000000),
     "7B": dict(n_layer=32, n_head=32, dim=4096),
@@ -82,6 +96,7 @@ transformer_configs = {
     "stories15M": dict(n_layer=6, n_head=6, dim=288),
     "stories110M": dict(n_layer=12, n_head=12, dim=768),
 
+    "starcoder2-3b": dict(block_size=16384, n_layer=30, n_head=24, n_local_heads=2, dim=3072, intermediate_size=12288, vocab_size=49152, rope_base=500000, tie_embedding_weights=True, norm_type="layernorm", glu=False, mlp_bias=True, attn_bias=True),
     "llama-3.2-1b": dict(block_size=131072, n_layer=16, n_head=32, n_local_heads=8, dim=2048, intermediate_size=8192, vocab_size=128256, rope_base=500000, tie_embedding_weights=True),
     "llama-3-8b": dict(block_size=8192, n_layer=32, n_head=32, n_local_heads=8, dim=4096, intermediate_size=14336, vocab_size=128256, rope_base=500000),
     "llama-3-70b": dict(block_size=8192, n_layer=80, n_head=64, n_local_heads=8, dim=8192, intermediate_size=28672, vocab_size=128256, rope_base=500000),
@@ -121,7 +136,7 @@ class Transformer(nn.Module):
 
         self.tok_embeddings = nn.Embedding(config.vocab_size, config.dim)
         self.layers = nn.ModuleList(TransformerBlock(config) for _ in range(config.n_layer))
-        self.norm = RMSNorm(config.dim, eps=config.norm_eps)
+        self.norm = config.make_norm()
         self.output = nn.Linear(config.dim, config.vocab_size, bias=False)
         if config.tie_embedding_weights:
             self.output.weight = self.tok_embeddings.weight
@@ -135,7 +150,6 @@ class Transformer(nn.Module):
     def setup_caches(self, max_batch_size, max_seq_length):
         if self.max_seq_length >= max_seq_length and self.max_batch_size >= max_batch_size:
             return
-        head_dim = self.config.dim // self.config.n_head
         max_seq_length = find_multiple(max_seq_length, 8)
         self.max_seq_length = max_seq_length
         self.max_batch_size = max_batch_size
@@ -146,9 +160,9 @@ class Transformer(nn.Module):
         elif hasattr(self.output, "scales_and_zeros"):
             dtype = self.output.scales_and_zeros.dtype
         for b in self.layers:
-            b.attention.kv_cache = KVCache(max_batch_size, max_seq_length, self.config.n_local_heads, head_dim, dtype)
+            b.attention.kv_cache = KVCache(max_batch_size, max_seq_length, self.config.n_local_heads, self.config.head_dim, dtype)
 
-        self.freqs_cis = precompute_freqs_cis(self.config.block_size, self.config.dim // self.config.n_head, self.config.rope_base, dtype, self.config.rope_scaling)
+        self.freqs_cis = precompute_freqs_cis(self.config.block_size, self.config.head_dim, self.config.rope_base, dtype, self.config.rope_scaling)
 
     def forward(self, mask: BlockMask, idx: Tensor, input_pos: Optional[Tensor] = None) -> Tensor:
         assert self.freqs_cis is not None, "Caches must be initialized first"
@@ -172,8 +186,8 @@ class TransformerBlock(nn.Module):
         super().__init__()
         self.attention = Attention(config)
         self.feed_forward = FeedForward(config)
-        self.ffn_norm = RMSNorm(config.dim, config.norm_eps)
-        self.attention_norm = RMSNorm(config.dim, config.norm_eps)
+        self.ffn_norm = config.make_norm()
+        self.attention_norm = config.make_norm()
 
     def forward(self, x: Tensor, input_pos: Tensor, freqs_cis: Tensor, mask: BlockMask) -> Tensor:
         h = x + self.attention(self.attention_norm(x), freqs_cis, mask, input_pos)
@@ -188,8 +202,8 @@ class Attention(nn.Module):
 
         total_head_dim = (config.n_head + 2 * config.n_local_heads) * config.head_dim
         # key, query, value projections for all heads, but in a batch
-        self.wqkv = nn.Linear(config.dim, total_head_dim, bias=False)
-        self.wo = nn.Linear(config.dim, config.dim, bias=False)
+        self.wqkv = nn.Linear(config.dim, total_head_dim, bias=config.attn_bias)
+        self.wo = nn.Linear(config.dim, config.dim, bias=config.attn_bias)
         self.kv_cache = None
 
         self.n_head = config.n_head
@@ -223,7 +237,7 @@ class Attention(nn.Module):
         if self.kv_cache is not None:
             k, v = self.kv_cache.update(input_pos, k, v)
 
-        y = flex_attention(q, k, v, block_mask=mask, enable_gqa=(self.n_head != self.n_local_heads))
+        y = flex_attention_maybe_pad(q, k, v, block_mask=mask, enable_gqa=(self.n_head != self.n_local_heads))
 
         y = y.transpose(1, 2).contiguous().view(bsz, seqlen, self.dim)
 
@@ -234,12 +248,19 @@ class Attention(nn.Module):
 class FeedForward(nn.Module):
     def __init__(self, config: ModelArgs) -> None:
         super().__init__()
-        self.w1 = nn.Linear(config.dim, config.intermediate_size, bias=False)
-        self.w3 = nn.Linear(config.dim, config.intermediate_size, bias=False)
-        self.w2 = nn.Linear(config.intermediate_size, config.dim, bias=False)
+        self.w1 = nn.Linear(config.dim, config.intermediate_size, bias=config.mlp_bias)
+        if config.glu:
+            self.w3 = nn.Linear(config.dim, config.intermediate_size, bias=config.mlp_bias)
+        else:
+            self.w3 = None
+        self.w2 = nn.Linear(config.intermediate_size, config.dim, bias=config.mlp_bias)
+        self.act = F.silu if config.act_fn == "silu" else partial(F.gelu, approximate=True)
 
     def forward(self, x: Tensor) -> Tensor:
-        return self.w2(F.silu(self.w1(x)) * self.w3(x))
+        out = self.act(self.w1(x))
+        if self.w3:
+            out *= self.w3(x)
+        return self.w2(out)
 
 
 class RMSNorm(nn.Module):

@@ -56,7 +56,6 @@ class HfTokenizerWrapper(TokenizerInterface):
 
     def encode(self, text):
         res = self.processor.encode(text).ids
-        breakpoint()
         return res
 
     def decode(self, tokens):

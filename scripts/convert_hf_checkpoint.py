@@ -86,19 +86,25 @@ def convert_hf_checkpoint(
     final_result = {}
 
     weight_map = {
-        "model.embed_tokens.weight": "tok_embeddings.weight",
-        "model.layers.{}.self_attn.q_proj.weight": "layers.{}.attention.wq.weight",
-        "model.layers.{}.self_attn.k_proj.weight": "layers.{}.attention.wk.weight",
-        "model.layers.{}.self_attn.v_proj.weight": "layers.{}.attention.wv.weight",
-        "model.layers.{}.self_attn.o_proj.weight": "layers.{}.attention.wo.weight",
+        "model.embed_tokens": "tok_embeddings",
+        "model.layers.{}.self_attn.q_proj": "layers.{}.attention.wq",
+        "model.layers.{}.self_attn.k_proj": "layers.{}.attention.wk",
+        "model.layers.{}.self_attn.v_proj": "layers.{}.attention.wv",
+        "model.layers.{}.self_attn.o_proj": "layers.{}.attention.wo",
+        'model.layers.{}.mlp.gate_proj': 'layers.{}.feed_forward.w1',
+        "model.layers.{}.mlp.up_proj": "layers.{}.feed_forward.w3",
+        "model.layers.{}.mlp.down_proj": "layers.{}.feed_forward.w2",
+        "model.layers.{}.input_layernorm": "layers.{}.attention_norm",
+        "model.layers.{}.post_attention_layernorm": "layers.{}.ffn_norm",
+        "model.norm": "norm",
+        "lm_head": "output",
+        # Starcoder2
+        'model.layers.{}.mlp.c_fc': 'layers.{}.feed_forward.w1',
+        "model.layers.{}.mlp.c_proj": "layers.{}.feed_forward.w2",
+    }
+    weight_map = {k + postfix: v + postfix for k, v in weight_map.items() for postfix in [".weight", ".bias"]}
+    weight_map |= {
         'model.layers.{}.self_attn.rotary_emb.inv_freq': None,
-        'model.layers.{}.mlp.gate_proj.weight': 'layers.{}.feed_forward.w1.weight',
-        "model.layers.{}.mlp.up_proj.weight": "layers.{}.feed_forward.w3.weight",
-        "model.layers.{}.mlp.down_proj.weight": "layers.{}.feed_forward.w2.weight",
-        "model.layers.{}.input_layernorm.weight": "layers.{}.attention_norm.weight",
-        "model.layers.{}.post_attention_layernorm.weight": "layers.{}.ffn_norm.weight",
-        "model.norm.weight": "norm.weight",
-        "lm_head.weight": "output.weight",
     }
     
     for key, value in merged_result.items():
@@ -119,8 +125,9 @@ def convert_hf_checkpoint(
             q = final_result[key]
             k = final_result[key.replace("wq", "wk")]
             v = final_result[key.replace("wq", "wv")]
-            q = permute(q, config.n_head)
-            k = permute(k, config.n_local_heads)
+            if "weight" in key:
+                q = permute(q, config.n_head)
+                k = permute(k, config.n_local_heads)
             final_result[key.replace("wq", "wqkv")] = torch.cat([q, k, v])
             del final_result[key]
             del final_result[key.replace("wq", "wk")]
