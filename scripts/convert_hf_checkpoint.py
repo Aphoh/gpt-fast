@@ -75,6 +75,13 @@ def convert_hf_checkpoint(
             .reshape(config.head_dim * n_head, dim)
         )
 
+    def permute_bias(b, n_head):
+        return (
+            b.view(n_head, 2, config.head_dim // 2)
+            .transpose(1, 2)
+            .reshape(config.head_dim * n_head)
+        )
+
     merged_result = {}
     for file in sorted(bin_files):
        if "safetensors" in str(file):
@@ -83,6 +90,7 @@ def convert_hf_checkpoint(
        else:
            state_dict = torch.load(str(file), map_location="cpu", mmap=True, weights_only=True)
            merged_result.update(state_dict)
+
     final_result = {}
 
     weight_map = {
@@ -128,10 +136,17 @@ def convert_hf_checkpoint(
             if "weight" in key:
                 q = permute(q, config.n_head)
                 k = permute(k, config.n_local_heads)
+            elif "bias" in key:
+                q = permute_bias(q, config.n_head)
+                k = permute_bias(k, config.n_local_heads)
             final_result[key.replace("wq", "wqkv")] = torch.cat([q, k, v])
             del final_result[key]
             del final_result[key.replace("wq", "wk")]
             del final_result[key.replace("wq", "wv")]
+
+    for key in final_result.keys():
+        print(f"{key}: {final_result[key].shape}")
+
     print(f"Saving checkpoint to {checkpoint_dir / 'model.pth'}")
     torch.save(final_result, checkpoint_dir / "model.pth")
     if 'llama-3-' in model_name.lower() or 'llama-3.1-' in model_name.lower():

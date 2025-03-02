@@ -96,7 +96,7 @@ transformer_configs = {
     "stories15M": dict(n_layer=6, n_head=6, dim=288),
     "stories110M": dict(n_layer=12, n_head=12, dim=768),
 
-    "starcoder2-3b": dict(block_size=16384, n_layer=30, n_head=24, n_local_heads=2, dim=3072, intermediate_size=12288, vocab_size=49152, rope_base=500000, tie_embedding_weights=True, norm_type="layernorm", glu=False, mlp_bias=True, attn_bias=True),
+    "starcoder2-3b": dict(block_size=16384, n_layer=30, n_head=24, n_local_heads=2, dim=3072, intermediate_size=12288, vocab_size=49152, rope_base=500000, tie_embedding_weights=True, norm_type="layernorm", glu=False, mlp_bias=True, attn_bias=True, act_fn="gelu_approx"),
     "llama-3.2-1b": dict(block_size=131072, n_layer=16, n_head=32, n_local_heads=8, dim=2048, intermediate_size=8192, vocab_size=128256, rope_base=500000, tie_embedding_weights=True),
     "llama-3-8b": dict(block_size=8192, n_layer=32, n_head=32, n_local_heads=8, dim=4096, intermediate_size=14336, vocab_size=128256, rope_base=500000),
     "llama-3-70b": dict(block_size=8192, n_layer=80, n_head=64, n_local_heads=8, dim=8192, intermediate_size=28672, vocab_size=128256, rope_base=500000),
@@ -254,7 +254,7 @@ class FeedForward(nn.Module):
         else:
             self.w3 = None
         self.w2 = nn.Linear(config.intermediate_size, config.dim, bias=config.mlp_bias)
-        self.act = F.silu if config.act_fn == "silu" else partial(F.gelu, approximate=True)
+        self.act = F.silu if config.act_fn == "silu" else partial(F.gelu, approximate="tanh")
 
     def forward(self, x: Tensor) -> Tensor:
         out = self.act(self.w1(x))
