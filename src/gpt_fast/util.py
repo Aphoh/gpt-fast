@@ -19,6 +19,14 @@ def load_model(
     return model
 
 
+def input_pos_from_start_inds(start_inds: torch.Tensor, seq_len: int) -> torch.Tensor:
+    (B,) = start_inds.shape
+    input_pos_base = torch.arange(seq_len)[None, :].expand(B, seq_len)
+    start_inds_expanded = start_inds[:, None].expand(B, seq_len)
+    input_pos = input_pos_base - start_inds_expanded
+    return input_pos.clamp(0)
+
+
 def _is_power_of_two(n: int) -> bool:
     return (n & (n - 1)) == 0
 
