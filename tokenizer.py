@@ -7,6 +7,7 @@ from tokenizers import Tokenizer
 from pathlib import Path
 from typing import Dict
 
+
 class TokenizerInterface:
     def __init__(self, model_path: Path):
         self.model_path = model_path
@@ -22,6 +23,7 @@ class TokenizerInterface:
 
     def eos_id(self):
         raise NotImplementedError("This method should be overridden by subclasses.")
+
 
 class SentencePieceWrapper(TokenizerInterface):
     def __init__(self, model_path):
@@ -39,6 +41,7 @@ class SentencePieceWrapper(TokenizerInterface):
 
     def eos_id(self):
         return self.processor.eos_id()
+
 
 class HfTokenizerWrapper(TokenizerInterface):
     def __init__(self, checkpoint_dir: Path):
@@ -66,6 +69,7 @@ class HfTokenizerWrapper(TokenizerInterface):
 
     def eos_id(self):
         return self.eos_token_id
+
 
 class TiktokenWrapper(TokenizerInterface):
     """
@@ -123,10 +127,11 @@ class TiktokenWrapper(TokenizerInterface):
     def eos_id(self):
         return self._eos_id
 
+
 def get_tokenizer(checkpoint_dir: Path):
     """
     Factory function to get the appropriate tokenizer based on the model name.
-    
+
     Args:
     - tokenizer_model_path (str): The file path to the tokenizer model.
     - model_name (str): The name of the model, used to determine the tokenizer type.

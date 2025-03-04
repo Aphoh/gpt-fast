@@ -3,3 +3,8 @@ sentencepiece
 tiktoken
 blobfile
 safetensors
+pre-commit
+tokenizers
+huggingface_hub
+triton
+setuptools

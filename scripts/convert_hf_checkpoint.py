@@ -22,7 +22,9 @@ from model import ModelArgs
 @torch.inference_mode()
 def convert_hf_checkpoint(
     *,
-    checkpoint_dir: Path = Path("checkpoints/meta-Transformer/Transformer-2-7b-chat-hf"),
+    checkpoint_dir: Path = Path(
+        "checkpoints/meta-Transformer/Transformer-2-7b-chat-hf"
+    ),
     model_name: Optional[str] = None,
 ) -> None:
     if model_name is None:
@@ -32,25 +34,25 @@ def convert_hf_checkpoint(
     print(f"Model config {config.__dict__}")
 
     # Load the json file containing weight mapping
-    model_map_json_safetensors = checkpoint_dir / 'model.safetensors.index.json'
+    model_map_json_safetensors = checkpoint_dir / "model.safetensors.index.json"
     model_map_json_pytorch = checkpoint_dir / "pytorch_model.bin.index.json"
     model_map_json = None
-   
+
     try:
-      assert model_map_json_safetensors.is_file()
-      model_map_json = model_map_json_safetensors
-      print(f"Found safetensors index at {model_map_json_safetensors}")
+        assert model_map_json_safetensors.is_file()
+        model_map_json = model_map_json_safetensors
+        print(f"Found safetensors index at {model_map_json_safetensors}")
     except AssertionError:
-      print(f"{model_map_json_safetensors} not found")
+        print(f"{model_map_json_safetensors} not found")
     if model_map_json is None:
-      try:
-        assert model_map_json_pytorch.is_file()
-        model_map_json = model_map_json_pytorch
-        print(f"Found pytorch index at {model_map_json_pytorch}")
-      except AssertionError:
-        print(f"{model_map_json_pytorch} not found")
-   
-    if model_map_json is not None: 
+        try:
+            assert model_map_json_pytorch.is_file()
+            model_map_json = model_map_json_pytorch
+            print(f"Found pytorch index at {model_map_json_pytorch}")
+        except AssertionError:
+            print(f"{model_map_json_pytorch} not found")
+
+    if model_map_json is not None:
         with open(model_map_json) as json_map:
             bin_index = json.load(json_map)
 
@@ -65,7 +67,9 @@ def convert_hf_checkpoint(
             print("Found model.safetensors")
             bin_files = {st_file}
         else:
-            raise FileNotFoundError(f"Could not find pytorch_model.bin or model.safetensors in {checkpoint_dir}")
+            raise FileNotFoundError(
+                f"Could not find pytorch_model.bin or model.safetensors in {checkpoint_dir}"
+            )
 
     def permute(w, n_head):
         dim = config.dim
@@ -84,12 +88,14 @@ def convert_hf_checkpoint(
 
     merged_result = {}
     for file in sorted(bin_files):
-       if "safetensors" in str(file):
-           state_dict = load_safetensors_file(str(file), device="cpu")
-           merged_result.update(state_dict)
-       else:
-           state_dict = torch.load(str(file), map_location="cpu", mmap=True, weights_only=True)
-           merged_result.update(state_dict)
+        if "safetensors" in str(file):
+            state_dict = load_safetensors_file(str(file), device="cpu")
+            merged_result.update(state_dict)
+        else:
+            state_dict = torch.load(
+                str(file), map_location="cpu", mmap=True, weights_only=True
+            )
+            merged_result.update(state_dict)
 
     final_result = {}
 
@@ -99,7 +105,7 @@ def convert_hf_checkpoint(
         "model.layers.{}.self_attn.k_proj": "layers.{}.attention.wk",
         "model.layers.{}.self_attn.v_proj": "layers.{}.attention.wv",
         "model.layers.{}.self_attn.o_proj": "layers.{}.attention.wo",
-        'model.layers.{}.mlp.gate_proj': 'layers.{}.feed_forward.w1',
+        "model.layers.{}.mlp.gate_proj": "layers.{}.feed_forward.w1",
         "model.layers.{}.mlp.up_proj": "layers.{}.feed_forward.w3",
         "model.layers.{}.mlp.down_proj": "layers.{}.feed_forward.w2",
         "model.layers.{}.input_layernorm": "layers.{}.attention_norm",
@@ -107,18 +113,22 @@ def convert_hf_checkpoint(
         "model.norm": "norm",
         "lm_head": "output",
         # Starcoder2
-        'model.layers.{}.mlp.c_fc': 'layers.{}.feed_forward.w1',
+        "model.layers.{}.mlp.c_fc": "layers.{}.feed_forward.w1",
         "model.layers.{}.mlp.c_proj": "layers.{}.feed_forward.w2",
     }
-    weight_map = {k + postfix: v + postfix for k, v in weight_map.items() for postfix in [".weight", ".bias"]}
-    weight_map |= {
-        'model.layers.{}.self_attn.rotary_emb.inv_freq': None,
+    weight_map = {
+        k + postfix: v + postfix
+        for k, v in weight_map.items()
+        for postfix in [".weight", ".bias"]
     }
-    
+    weight_map |= {
+        "model.layers.{}.self_attn.rotary_emb.inv_freq": None,
+    }
+
     for key, value in merged_result.items():
         if "layers" in key:
-            abstract_key = re.sub(r'(\d+)', '{}', key)
-            layer_num = re.search(r'\d+', key).group(0)
+            abstract_key = re.sub(r"(\d+)", "{}", key)
+            layer_num = re.search(r"\d+", key).group(0)
             new_key = weight_map[abstract_key]
             if new_key is None:
                 continue
@@ -149,8 +159,8 @@ def convert_hf_checkpoint(
 
     print(f"Saving checkpoint to {checkpoint_dir / 'model.pth'}")
     torch.save(final_result, checkpoint_dir / "model.pth")
-    if 'llama-3-' in model_name.lower() or 'llama-3.1-' in model_name.lower():
-        if 'llama-3.1-405b' in model_name.lower():
+    if "llama-3-" in model_name.lower() or "llama-3.1-" in model_name.lower():
+        if "llama-3.1-405b" in model_name.lower():
             original_dir = checkpoint_dir / "original" / "mp16"
         else:
             original_dir = checkpoint_dir / "original"
@@ -159,11 +169,17 @@ def convert_hf_checkpoint(
         print(f"Copying {tokenizer_model} to {tokenizer_model_tiktoken}")
         shutil.copy(tokenizer_model, tokenizer_model_tiktoken)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description='Convert HuggingFace checkpoint.')
-    parser.add_argument('--checkpoint_dir', type=Path, default=Path("checkpoints/meta-llama/llama-2-7b-chat-hf"))
-    parser.add_argument('--model_name', type=str, default=None)
+
+    parser = argparse.ArgumentParser(description="Convert HuggingFace checkpoint.")
+    parser.add_argument(
+        "--checkpoint_dir",
+        type=Path,
+        default=Path("checkpoints/meta-llama/llama-2-7b-chat-hf"),
+    )
+    parser.add_argument("--model_name", type=str, default=None)
 
     args = parser.parse_args()
     convert_hf_checkpoint(

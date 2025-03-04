@@ -2,10 +2,15 @@ from typing import Any, Dict, Optional, Tuple, Union
 import torch
 from torch import Tensor
 from torch.nn.attention.flex_attention import (
-    flex_attention, BlockMask, _score_mod_signature
+    flex_attention,
+    BlockMask,
+    _score_mod_signature,
 )
 
-def load_model(model, checkpoint_path: str, precision: torch.dtype, device: torch.device):
+
+def load_model(
+    model, checkpoint_path: str, precision: torch.dtype, device: torch.device
+):
     checkpoint = torch.load(str(checkpoint_path), mmap=True, weights_only=True)
     if model.config.tie_embedding_weights:
         checkpoint["output.weight"] = checkpoint["tok_embeddings.weight"]
@@ -13,17 +18,20 @@ def load_model(model, checkpoint_path: str, precision: torch.dtype, device: torc
     model = model.to(dtype=precision, device=device)
     return model
 
+
 def _is_power_of_two(n: int) -> bool:
     return (n & (n - 1)) == 0
+
 
 def _next_power_of_two(n: int) -> int:
     return 1 << (n - 1).bit_length()
 
+
 # compilation args taken from https://github.com/pytorch/pytorch/issues/142817
-@torch.compile(fullgraph=True, dynamic=False, mode="max-autotune-no-cudagraphs") 
+@torch.compile(fullgraph=True, dynamic=False, mode="max-autotune-no-cudagraphs")
 def flex_attention_maybe_pad(
     query: torch.Tensor,  # (B, Hq, L, E)
-    key: Tensor,    # (B, Hkv, S, E)
+    key: Tensor,  # (B, Hkv, S, E)
     value: Tensor,  # (B, Hkv, S, E)
     score_mod: Optional[_score_mod_signature] = None,
     block_mask: Optional[BlockMask] = None,
@@ -48,13 +56,24 @@ def flex_attention_maybe_pad(
         new_n_q_heads = n_q_heads + n_groups * extra_heads_per_group
 
         # for each group, append extra_heads_per_group of fake heads
-        query = torch.concat([
-            query.view(batch_size, n_groups, group_size, q_len, head_dims),
-            query.new_zeros(batch_size, n_groups, extra_heads_per_group, q_len, head_dims),
-        ], dim=2).view(batch_size, new_n_q_heads, q_len, head_dims).contiguous()
+        query = (
+            torch.concat(
+                [
+                    query.view(batch_size, n_groups, group_size, q_len, head_dims),
+                    query.new_zeros(
+                        batch_size, n_groups, extra_heads_per_group, q_len, head_dims
+                    ),
+                ],
+                dim=2,
+            )
+            .view(batch_size, new_n_q_heads, q_len, head_dims)
+            .contiguous()
+        )
 
         result = flex_attention(
-            query, key, value,
+            query,
+            key,
+            value,
             score_mod=score_mod,
             block_mask=block_mask,
             scale=scale,
@@ -73,7 +92,9 @@ def flex_attention_maybe_pad(
 
     # If no padding is needed, just run flex_attention directly
     return flex_attention(
-        query, key, value,
+        query,
+        key,
+        value,
         score_mod=score_mod,
         block_mask=block_mask,
         scale=scale,
