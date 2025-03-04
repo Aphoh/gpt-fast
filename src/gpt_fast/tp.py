@@ -16,8 +16,7 @@ else:
     # Distributed is not supported on MacOS
     funcol = None
 
-from model import Attention, FeedForward, Transformer
-from quantize import WeightOnlyInt4Linear
+from gpt_fast.model import Attention, FeedForward, Transformer
 
 
 def _get_rank() -> int:
@@ -87,31 +86,9 @@ def _apply_tp_linear(
         # attention
         assert len(weight_splits) == 3
 
-        if isinstance(linear, WeightOnlyInt4Linear):
-            sharded_weight = shard_qkv(
-                linear.weight, shard_dim, [i // 8 for i in weight_splits]
-            )
-            linear.scales_and_zeros = shard_qkv(
-                linear.scales_and_zeros, 1 - shard_dim, weight_splits
-            )
-        else:
-            sharded_weight = shard_qkv(linear.weight, shard_dim, weight_splits)
-        if hasattr(linear, "scales") and style == "colwise":
-            linear.scales = shard_qkv(linear.scales, 0, weight_splits)
+        sharded_weight = shard_qkv(linear.weight, shard_dim, weight_splits)
     else:
         sharded_weight = shard(linear.weight, shard_dim)
-        if isinstance(linear, WeightOnlyInt4Linear):
-            linear.scales_and_zeros = shard(linear.scales_and_zeros, 1 - shard_dim)
-            if style == "rowwise":
-                assert (
-                    linear.scales_and_zeros.shape[0] * 32
-                    == sharded_weight.shape[1]
-                    * sharded_weight.shape[2]
-                    * sharded_weight.shape[3]
-                )
-                assert linear.scales_and_zeros.shape[1] == sharded_weight.shape[0] * 8
-        if hasattr(linear, "scales") and style == "colwise":
-            linear.scales = shard(linear.scales, 0)
 
     # local_break()
     linear.weight = nn.Parameter(sharded_weight, requires_grad=False)

@@ -16,7 +16,7 @@ import torch
 wd = Path(__file__).parent.parent.resolve()
 sys.path.append(str(wd))
 
-from model import ModelArgs
+from gpt_fast.model import ModelArgs
 
 
 @torch.inference_mode()

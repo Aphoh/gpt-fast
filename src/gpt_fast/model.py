@@ -13,7 +13,7 @@ import torch.nn as nn
 from torch import Tensor
 from torch.nn import functional as F
 from torch.nn.attention.flex_attention import _mask_mod_signature, BlockMask
-from util import flex_attention_maybe_pad
+from gpt_fast.util import flex_attention_maybe_pad
 
 
 def find_multiple(n: int, k: int) -> int:

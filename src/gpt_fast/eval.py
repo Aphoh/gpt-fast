@@ -17,9 +17,9 @@ torch._inductor.config.triton.unique_kernel_names = True
 torch._inductor.config.epilogue_fusion = False
 torch._dynamo.config.cache_size_limit = 100000
 
-from tokenizer import get_tokenizer
+from gpt_fast.tokenizer import get_tokenizer
 
-from model import Transformer
+from gpt_fast.model import Transformer
 
 try:
     import lm_eval
@@ -28,7 +28,7 @@ try:
 except:
     lm_eval_available = False
 
-from generate import _load_model, encode_tokens, model_forward
+from gpt_fast.generate import _load_model, encode_tokens, model_forward
 
 if lm_eval_available:
     try:  # lm_eval version 0.4

@@ -15,7 +15,7 @@ import torch._dynamo.config
 import torch._inductor.config
 from torch.nn.attention.flex_attention import BlockMask, create_block_mask, and_masks
 
-from util import load_model
+from gpt_fast.util import load_model
 
 
 def device_sync(device):
@@ -27,12 +27,6 @@ def device_sync(device):
         print(f"device={device} is not yet suppported")
 
 
-torch._inductor.config.coordinate_descent_tuning = True
-torch._inductor.config.triton.unique_kernel_names = True
-# Experimental features to reduce compilation times, will be on by default in future
-torch._inductor.config.fx_graph_cache = True
-torch._functorch.config.enable_autograd_cache = True
-
 default_device = "cuda" if torch.cuda.is_available() else "cpu"
 
 create_block_mask = torch.compile(create_block_mask)
@@ -41,8 +35,8 @@ create_block_mask = torch.compile(create_block_mask)
 wd = Path(__file__).parent.parent.resolve()
 sys.path.append(str(wd))
 
-from model import Transformer
-from tokenizer import get_tokenizer
+from gpt_fast.model import Transformer
+from gpt_fast.tokenizer import get_tokenizer
 
 
 def multinomial_sample_one_no_sync(
@@ -209,7 +203,7 @@ def _load_model(checkpoint_path, device, precision, use_tp):
     model = load_model(model, checkpoint_path, precision=precision, device=device)
 
     if use_tp:
-        from tp import apply_tp
+        from gpt_fast.tp import apply_tp
 
         print("Applying tensor parallel to model ...")
         apply_tp(model)
@@ -261,7 +255,7 @@ def main(
     assert checkpoint_path.is_file(), checkpoint_path
 
     global print
-    from tp import maybe_init_dist
+    from gpt_fast.tp import maybe_init_dist
 
     rank = maybe_init_dist()
     use_tp = rank is not None
