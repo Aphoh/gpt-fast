@@ -11,11 +11,12 @@ from typing import Optional, Tuple, Union
 import torch
 import torch._dynamo.config
 import torch._inductor.config
-from torch.nn.attention.flex_attention import BlockMask, create_block_mask
+from torch.nn.attention.flex_attention import BlockMask
 
 from gpt_fast.util import load_model
 from gpt_fast.model import Transformer
 from gpt_fast.tokenizer import get_tokenizer
+from gpt_fast.mask_utils import make_base_gen_mask, make_prefill_mask
 
 
 def device_sync(device):
@@ -28,8 +29,6 @@ def device_sync(device):
 
 
 default_device = "cuda" if torch.cuda.is_available() else "cpu"
-
-create_block_mask = torch.compile(create_block_mask)
 
 
 def multinomial_sample_one_no_sync(
@@ -56,20 +55,17 @@ def sample(logits, temperature: float = 1.0, top_k: Optional[int] = None):
     return idx_next, probs
 
 
-def roundup(val, multiplier):
-    return ((val - 1) // multiplier + 1) * multiplier
-
-
-def causal_mask(b, h, q, kv):
-    return q >= kv
-
-
 def prefill(
-    model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, **sampling_kwargs
+    start_inds: torch.Tensor,
+    model: Transformer,
+    x: torch.Tensor,
+    input_pos: torch.Tensor,
+    **sampling_kwargs,
 ) -> torch.Tensor:
+    # start_inds: [B]
     # input_pos: [B, S]
-    mask = create_block_mask(
-        causal_mask, 1, 1, input_pos.shape[0], model.max_seq_length, device=x.device
+    mask = make_prefill_mask(
+        start_inds, input_pos, device=x.device, max_seq_length=model.max_seq_length
     )
     logits = model(mask, x, input_pos)
     return sample(logits, **sampling_kwargs)[0]
@@ -95,18 +91,14 @@ def decode_one_token(
 def decode_n_tokens(
     model: Transformer,
     cur_token: torch.Tensor,
+    start_inds: torch.Tensor,
     input_pos: torch.Tensor,
     num_new_tokens: int,
     callback=lambda _: _,
     **sampling_kwargs,
 ):
-    block_mask = create_block_mask(
-        causal_mask,
-        1,
-        1,
-        model.max_seq_length,
-        model.max_seq_length,
-        device=cur_token.device,
+    block_mask = make_base_gen_mask(
+        start_inds, model.max_seq_length, device=cur_token.device
     )
     new_tokens, new_probs = [], []
     for i in range(num_new_tokens):
@@ -160,8 +152,9 @@ def generate(
     seq = empty
     input_pos = torch.arange(0, T, device=device)
 
+    start_inds = torch.tensor([0], device=device)
     next_token = prefill(
-        model, prompt.view(batch_size, -1), input_pos, **sampling_kwargs
+        start_inds, model, prompt.view(batch_size, -1), input_pos, **sampling_kwargs
     ).clone()
     seq[:, T] = next_token.squeeze()
 
@@ -170,6 +163,7 @@ def generate(
     generated_tokens, _ = decode_n_tokens(
         model,
         next_token.view(batch_size, -1),
+        start_inds,
         input_pos,
         max_new_tokens - 1,
         callback=callback,
