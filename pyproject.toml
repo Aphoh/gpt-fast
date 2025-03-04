@@ -21,6 +21,9 @@ dependencies = [
 dev = [
     "pre-commit"
 ]
+test = [
+    "pytest"
+]
 
 [build-system]
 requires = ["hatchling"]

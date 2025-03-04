@@ -40,7 +40,6 @@ def flex_attention_maybe_pad(
     return_lse: bool = False,
     kernel_options: Optional[Dict[str, Any]] = None,
 ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
-
     batch_size, n_q_heads, q_len, head_dims = query.shape
     _, n_kv_heads, kv_len, _ = key.shape
 

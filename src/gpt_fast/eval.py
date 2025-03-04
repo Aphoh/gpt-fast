@@ -3,7 +3,6 @@
 
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
-import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -12,37 +11,23 @@ import torch
 import torch._dynamo.config
 import torch._inductor.config
 
-torch._dynamo.config.automatic_dynamic_shapes = True
-torch._inductor.config.triton.unique_kernel_names = True
-torch._inductor.config.epilogue_fusion = False
-torch._dynamo.config.cache_size_limit = 100000
-
 from gpt_fast.tokenizer import get_tokenizer
 
 from gpt_fast.model import Transformer
+from gpt_fast.generate import _load_model, encode_tokens, model_forward
 
 try:
     import lm_eval
 
     lm_eval_available = True
-except:
+except ImportError:
     lm_eval_available = False
 
-from gpt_fast.generate import _load_model, encode_tokens, model_forward
 
 if lm_eval_available:
-    try:  # lm_eval version 0.4
-        from lm_eval.models.huggingface import HFLM as eval_wrapper
-        from lm_eval.tasks import get_task_dict
-        from lm_eval.evaluator import evaluate
-    except:  # lm_eval version 0.3
-        from lm_eval import base
-        from lm_eval import tasks
-        from lm_eval import evaluator
-
-        eval_wrapper = base.BaseLM
-        get_task_dict = tasks.get_task_dict
-        evaluate = evaluator.evaluate
+    from lm_eval.models.huggingface import HFLM as eval_wrapper
+    from lm_eval.tasks import get_task_dict
+    from lm_eval.evaluator import evaluate
 
 
 def setup_cache_padded_seq_input_pos_max_seq_length_for_prefill(
@@ -185,7 +170,7 @@ def eval(
 
     try:
         lm_eval.tasks.initialize_tasks()
-    except:
+    except Exception:
         pass
 
     if "hendrycks_test" in tasks:

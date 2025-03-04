@@ -3,9 +3,7 @@
 
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
-from functools import partial
 import itertools
-import sys
 import time
 from pathlib import Path
 from typing import Optional, Tuple, Union
@@ -13,9 +11,11 @@ from typing import Optional, Tuple, Union
 import torch
 import torch._dynamo.config
 import torch._inductor.config
-from torch.nn.attention.flex_attention import BlockMask, create_block_mask, and_masks
+from torch.nn.attention.flex_attention import BlockMask, create_block_mask
 
 from gpt_fast.util import load_model
+from gpt_fast.model import Transformer
+from gpt_fast.tokenizer import get_tokenizer
 
 
 def device_sync(device):
@@ -30,13 +30,6 @@ def device_sync(device):
 default_device = "cuda" if torch.cuda.is_available() else "cpu"
 
 create_block_mask = torch.compile(create_block_mask)
-
-# support running without installing as a package
-wd = Path(__file__).parent.parent.resolve()
-sys.path.append(str(wd))
-
-from gpt_fast.model import Transformer
-from gpt_fast.tokenizer import get_tokenizer
 
 
 def multinomial_sample_one_no_sync(
@@ -196,7 +189,6 @@ def encode_tokens(tokenizer, string, bos=True, device=default_device):
 
 
 def _load_model(checkpoint_path, device, precision, use_tp):
-    use_cuda = "cuda" in device
     with torch.device("meta"):
         model = Transformer.from_name(checkpoint_path.parent.name)
 
@@ -262,7 +254,7 @@ def main(
     if use_tp:
         if rank != 0:
             # only print on rank 0
-            print = lambda *args, **kwargs: None
+            print = lambda *args, **kwargs: None  # noqa: E731
 
     print(f"Using device={device}")
     precision = torch.bfloat16
@@ -328,7 +320,7 @@ def main(
                 # print(, end='', flush=True)
 
         else:
-            callback = lambda x: x
+            callback = lambda x: x  # noqa: E731
         t0 = time.perf_counter()
         import contextlib
 
@@ -397,7 +389,7 @@ if __name__ == "__main__":
     def int_or_str(x):
         try:
             return int(x)
-        except:
+        except:  # noqa: E722
             return x
 
     parser.add_argument(

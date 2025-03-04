@@ -6,16 +6,10 @@
 import json
 import re
 import shutil
-import sys
 from pathlib import Path
 from typing import Optional
 from safetensors.torch import load_file as load_safetensors_file
 import torch
-
-# support running without installing as a package
-wd = Path(__file__).parent.parent.resolve()
-sys.path.append(str(wd))
-
 from gpt_fast.model import ModelArgs
 
 
