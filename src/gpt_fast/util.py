@@ -1,3 +1,4 @@
+import itertools
 from typing import Any, Dict, Optional, Tuple, Union
 import torch
 from torch import Tensor
@@ -109,3 +110,23 @@ def flex_attention_maybe_pad(
         return_lse=return_lse,
         kernel_options=kernel_options,
     )
+
+
+def get_model_size(model):
+    model_size = 0
+    params = 0
+    for name, child in model.named_children():
+        if not isinstance(child, torch.nn.Embedding):
+            model_size += sum(
+                [
+                    p.numel() * p.dtype.itemsize
+                    for p in itertools.chain(child.parameters(), child.buffers())
+                ]
+            )
+            params += sum(
+                [
+                    p.numel()
+                    for p in itertools.chain(child.parameters(), child.buffers())
+                ]
+            )
+    return model_size, params

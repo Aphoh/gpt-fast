@@ -3,23 +3,24 @@
 
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
-import itertools
 import time
 from pathlib import Path
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple
 
 import torch
 import torch._dynamo.config
 import torch._inductor.config
 from torch.nn.attention.flex_attention import BlockMask
+import tqdm
 
+from gpt_fast.inputs import Batch, read_ids, read_input_batches
 from gpt_fast.util import load_model
 from gpt_fast.model import Transformer
-from gpt_fast.tokenizer import get_tokenizer
+from gpt_fast.tokenizer import get_tokenizer, tokenize_and_pad
 from gpt_fast.mask_utils import make_base_gen_mask, make_prefill_mask
 
 
-def device_sync(device):
+def device_sync(device: str) -> None:
     if "cuda" in device:
         torch.cuda.synchronize(device)
     elif ("cpu" in device) or ("mps" in device):
@@ -28,7 +29,7 @@ def device_sync(device):
         print(f"device={device} is not yet suppported")
 
 
-default_device = "cuda" if torch.cuda.is_available() else "cpu"
+default_device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 def multinomial_sample_one_no_sync(
@@ -124,9 +125,6 @@ def generate(
     prompt: torch.Tensor,
     max_new_tokens: int,
     batch_size: int,
-    *,
-    interactive: bool,
-    callback=lambda x: x,
     **sampling_kwargs,
 ) -> torch.Tensor:
     """
@@ -135,10 +133,7 @@ def generate(
     # create an empty tensor of the expected final shape and fill in the current tokens
     T = prompt.size(-1)
     T_new = T + max_new_tokens
-    if interactive:
-        max_seq_length = 350
-    else:
-        max_seq_length = min(T_new, model.config.block_size)
+    max_seq_length = min(T_new, model.config.block_size)
 
     device, dtype = prompt.device, prompt.dtype
     with torch.device(device):
@@ -166,20 +161,12 @@ def generate(
         start_inds,
         input_pos,
         max_new_tokens - 1,
-        callback=callback,
         **sampling_kwargs,
     )
     seq[:, T + 1 :] = torch.cat(generated_tokens, dim=-1)
 
     generate_stats = {}
     return seq, generate_stats
-
-
-def encode_tokens(tokenizer, string, bos=True, device=default_device):
-    tokens = tokenizer.encode(string)
-    if bos:
-        tokens = [tokenizer.bos_id()] + tokens
-    return torch.tensor(tokens, dtype=torch.int, device=device)
 
 
 def _load_model(checkpoint_path, device, precision, use_tp):
@@ -198,47 +185,21 @@ def _load_model(checkpoint_path, device, precision, use_tp):
     return model.eval()
 
 
-def _get_model_size(model):
-    model_size = 0
-    params = 0
-    for name, child in model.named_children():
-        if not isinstance(child, torch.nn.Embedding):
-            model_size += sum(
-                [
-                    p.numel() * p.dtype.itemsize
-                    for p in itertools.chain(child.parameters(), child.buffers())
-                ]
-            )
-            params += sum(
-                [
-                    p.numel()
-                    for p in itertools.chain(child.parameters(), child.buffers())
-                ]
-            )
-    return model_size, params
-
-
-B_INST, E_INST = "[INST]", "[/INST]"
-
-
 def main(
-    prompt: Union[int, str] = "Hello, my name is",
-    interactive: bool = False,
-    num_samples: int = 5,
-    max_new_tokens: int = 100,
-    batch_size: int = 1,
-    top_k: int = 200,
-    temperature: float = 0.8,
-    checkpoint_path: Path = Path(
-        "checkpoints/meta-Transformer/Transformer-2-7b-chat-hf/model.pth"
-    ),
-    compile: bool = True,
-    compile_prefill: bool = False,
-    profile: Optional[Path] = None,
-    device=default_device,
+    input_file: Path,
+    output_file: Path,
+    max_new_tokens: int,
+    batch_size: int,
+    top_k: int,
+    temperature: float,
+    checkpoint_path: Path,
+    profile: Optional[Path],
+    device: torch.device,
 ) -> None:
     """Generates text samples based on a pre-trained Transformer model and tokenizer."""
+    ### Preamble
     assert checkpoint_path.is_file(), checkpoint_path
+    assert input_file.is_file(), output_file
 
     global print
     from gpt_fast.tp import maybe_init_dist
@@ -252,7 +213,13 @@ def main(
 
     print(f"Using device={device}")
     precision = torch.bfloat16
-    is_chat = "chat" in str(checkpoint_path)
+
+    completed_ids = set()
+    if output_file.is_file():
+        completed_ids = read_ids(output_file)
+        print(f"Skipping {len(completed_ids)} completed ids:")
+
+    input_iterator = read_input_batches(input_file, batch_size, completed_ids)
 
     print("Loading model ...")
     t0 = time.time()
@@ -263,116 +230,29 @@ def main(
 
     tokenizer = get_tokenizer(checkpoint_path.parent)
 
-    if isinstance(prompt, str):
-        encoded = encode_tokens(tokenizer, prompt, bos=False, device=device)
-    else:
-        # generate a fully synthetic prompt
-        encoded = torch.randint(0, 1024, (prompt,), device=device, dtype=torch.int64)
-    prompt_length = encoded.size(-1)
-
     torch.manual_seed(1234)
-    model_size, params = _get_model_size(model)
-    if compile:
-        global decode_one_token, prefill
-        decode_one_token = torch.compile(
-            decode_one_token, mode="reduce-overhead", fullgraph=True
-        )
-
-        # Uncomment to squeeze more perf out of prefill
-        if compile_prefill:
-            prefill = torch.compile(prefill, fullgraph=True, dynamic=True)
-
-    aggregate_metrics = {
-        "tokens_per_sec": [],
-        "accept_counts": [],
-    }
-    start = -1 if compile else 0
-
-    for i in range(start, num_samples):
-        device_sync(device=device)  # MKG
-        if i >= 0 and interactive:
-            prompt = input("What is your prompt? ")
-            if is_chat:
-                prompt = f"{B_INST} {prompt.strip()} {E_INST}"
-            encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
-
-        if interactive and i >= 0:
-            buffer = []
-            period_id = tokenizer.encode(".")[0]
-            done_generating = False
-
-            def callback(x):
-                nonlocal done_generating
-                if done_generating:
-                    return
-                buffer.append(tokenizer.decode([period_id] + x.tolist())[1:])
-                if x.item() == tokenizer.eos_id():
-                    done_generating = True
-                if len(buffer) == 4 or done_generating:
-                    print("".join(buffer), end="", flush=True)
-                    buffer.clear()
-                # print(, end='', flush=True)
-
-        else:
-            callback = lambda x: x  # noqa: E731
-        t0 = time.perf_counter()
-        import contextlib
-
-        if (i != num_samples - 1 or not profile) or (use_tp and rank != 0):
-            prof = contextlib.nullcontext()
-        else:
-            torch.profiler._utils._init_for_cuda_graphs()
-            prof = torch.profiler.profile()
-        with prof:
-            y, metrics = generate(
-                model,
-                encoded,
-                max_new_tokens,
-                batch_size=batch_size,
-                interactive=interactive,
-                callback=callback,
-                temperature=temperature,
-                top_k=top_k,
-            )
-        if i == -1:
-            print(f"Compilation time: {time.perf_counter() - t0:.2f} seconds")
-            continue
-        if hasattr(prof, "export_chrome_trace"):
-            if use_tp:
-                prof.export_chrome_trace(f"{profile}_rank_{rank}.json")
-            else:
-                prof.export_chrome_trace(f"{profile}.json")
-        device_sync(device=device)  # MKG
-        t = time.perf_counter() - t0
-
-        if not interactive:
-            # Just displaying the first generation
-            if batch_size > 1:
-                print("Only displaying the first generation of the batch")
-            print(tokenizer.decode(y[0].tolist()))
-        else:
-            print()
-        tokens_generated = y.size(-1) - prompt_length
-        generated_tokens_sec = tokens_generated / t
-        aggregate_metrics["tokens_per_sec"].append(generated_tokens_sec)
-        print(
-            f"Time for inference {i + 1}: {t:.02f} sec total, {generated_tokens_sec:.02f} tokens/sec"
-        )
-        print(
-            f"Bandwidth achieved: {model_size * generated_tokens_sec / 1e9:.02f} GB/s"
-        )
-        total_tokens_sec = y.numel() / t
-        print(f"FLOPS achieved: {params * total_tokens_sec * 2 / 1e12:.02f} TF/s")
-        print()
-    print("==========")
-
-    print(f"Batch Size: {batch_size}")
-    print(f"Prompt Length: {prompt_length}")
-    print(f"Generated tokens: {max_new_tokens}")
-    print(
-        f"Average tokens/sec: {torch.mean(torch.tensor(aggregate_metrics['tokens_per_sec'])).item():.2f}"
+    global decode_one_token, prefill
+    decode_one_token = torch.compile(
+        decode_one_token, mode="reduce-overhead", fullgraph=True
     )
-    print(f"Memory used: {torch.cuda.max_memory_reserved() / 1e9:.02f} GB")
+
+    # Uncomment to squeeze more perf out of prefill
+    prefill = torch.compile(prefill, fullgraph=True, dynamic=True)
+
+    for batch in tqdm(input_iterator, desc="Generating"):
+        batch: Batch
+        device_sync(device=device)
+        batch_encoded = tokenize_and_pad(batch.texts, tokenizer, model.max_seq_length)
+        output, metrics = generate(
+            model,
+            batch_encoded.padded,
+            max_new_tokens,
+            batch_size,
+            interactive=False,
+            temperature=temperature,
+            top_k=top_k,
+        )
+        # TODO: Write output to file
 
 
 if __name__ == "__main__":
@@ -380,65 +260,56 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Your CLI description.")
 
-    def int_or_str(x):
-        try:
-            return int(x)
-        except:  # noqa: E722
-            return x
-
     parser.add_argument(
-        "--prompt",
-        type=int_or_str,
-        default="Hello, my name is",
-        help="Input prompt. If it's an integer, will instead generate a synthetic prompt.",
+        "-i",
+        "--input_file",
+        type=Path,
+        help="Input jsonl with 'prompt' and 'id' keys",
+        default=Path("sample_input.jsonl"),
     )
-    parser.add_argument(
-        "--interactive",
-        action="store_true",
-        help="Whether to launch in interactive mode",
-    )
-    parser.add_argument("--num_samples", type=int, default=5, help="Number of samples.")
+    parser.add_argument("-o", "--output_file", type=Path, help="Output jsonl path")
     parser.add_argument(
         "--max_new_tokens", type=int, default=200, help="Maximum number of new tokens."
     )
     parser.add_argument(
-        "--batch_size", type=int, default=1, help="Batch size to benchmark with"
+        "--batch_size", type=int, default=4, help="Batch size to run with"
     )
     parser.add_argument("--top_k", type=int, default=200, help="Top-k for sampling.")
     parser.add_argument(
-        "--temperature", type=float, default=0.8, help="Temperature for sampling."
+        "--temperature", type=float, default=1.0, help="Temperature for sampling."
     )
     parser.add_argument(
+        "-c",
         "--checkpoint_path",
         type=Path,
         default=Path("checkpoints/meta-Transformer/Transformer-2-7b-chat-hf/model.pth"),
         help="Model checkpoint path.",
     )
-    parser.add_argument(
-        "--compile", action="store_true", help="Whether to compile the model."
-    )
-    parser.add_argument(
-        "--compile_prefill",
-        action="store_true",
-        help="Whether to compile the prefill (improves prefill perf, but higher compile times)",
-    )
     parser.add_argument("--profile", type=Path, default=None, help="Profile path.")
     parser.add_argument(
         "--device", type=str, default=default_device, help="Device to use"
     )
+    args = parser.parse_args()
+
+    input_file: Path = args.input_file
+    output_file: Path = args.output_file
+    max_new_tokens: int = args.max_new_tokens
+    batch_size: int = args.batch_size
+    top_k: int = args.top_k
+    temperature: float = args.temperature
+    checkpoint_path: Path = args.checkpoint_path
+    profile: Optional[Path] = args.profile
+    device: torch.device = torch.device(args.device)
 
     args = parser.parse_args()
     main(
-        args.prompt,
-        args.interactive,
-        args.num_samples,
+        input_file,
+        args.output_file,
         args.max_new_tokens,
         args.batch_size,
         args.top_k,
         args.temperature,
         args.checkpoint_path,
-        args.compile,
-        args.compile_prefill,
         args.profile,
         args.device,
     )
