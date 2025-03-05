@@ -228,14 +228,25 @@ class KVCache(nn.Module):
         self.register_buffer("v_cache", torch.zeros(cache_shape, dtype=dtype))
 
     def update(self, input_pos, k_val, v_val):
-        # input_pos: [S], k_val: [B, H, S, D]
-        assert input_pos.shape[0] == k_val.shape[2]
+        # input_pos: [B, S], k_val, v_val: [B, H, S, D]
+        B, H, S, D = k_val.shape
+        assert input_pos.shape[0] == B
+        assert input_pos.shape[1] == S
 
+        # Clone the caches
         k_out = self.k_cache
         v_out = self.v_cache
-        k_out[:, :, input_pos] = k_val
-        v_out[:, :, input_pos] = v_val
 
+        # Find valid indices (not -1)
+
+        # Handle each batch separately
+        # TODO: does this compile ok?
+        for b in range(B):
+            valid_mask = input_pos[b] != -1  # [S]
+            # Get valid indices
+            valid_indices = input_pos[b, valid_mask].squeeze(0)
+            k_out[b, :, valid_indices] = k_val[b, :, valid_mask]
+            v_out[b, :, valid_indices] = v_val[b, :, valid_mask]
         return k_out, v_out
 
 
