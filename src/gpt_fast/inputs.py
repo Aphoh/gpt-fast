@@ -7,7 +7,7 @@ They should be jsonl files with the format
 from dataclasses import dataclass
 import json
 from pathlib import Path
-from typing import Generator, List, Optional, Set
+from typing import Generator, List, Optional, Set, TextIO
 from tqdm import tqdm
 
 
@@ -54,3 +54,17 @@ def read_ids(input_path: Path) -> Set[str]:
             input = json.loads(line)
             ids.add(input["id"])
     return ids
+
+
+def write_outputs(output_file: TextIO, batch: Batch, outputs: List[str]) -> None:
+    """
+    Write outputs to a jsonl file.
+    """
+    for (
+        output,
+        input_text,
+        _id,
+    ) in zip(outputs, batch.texts, batch.ids):
+        output_file.write(
+            json.dumps({"input_text": input_text, "id": _id, "output": output}) + "\n"
+        )

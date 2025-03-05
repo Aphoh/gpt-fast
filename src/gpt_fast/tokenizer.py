@@ -112,3 +112,25 @@ def tokenize_and_pad(
     extra_padding = final_len - padded.shape[1]
     padded = torch.nn.functional.pad(padded, (extra_padding, 0), value=0)
     return PaddedOutput(start_inds=torch.tensor(start_inds), padded=padded)
+
+
+def detokenize_output_ids(output_ids: torch.IntTensor, tokenizer: TokenizerInterface):
+    """
+    Detokenizes a list of output ids.
+
+    Args:
+    - output_ids: [B, S] tensor of output ids, where -1 indicates padding
+    - tokenizer (TokenizerInterface): The tokenizer to use.
+
+    Returns:
+    - List[str]: A list of detokenized sequences.
+    """
+    to_decode = []
+    for i in range(output_ids.shape[0]):
+        first_pad_idx = torch.argwhere(output_ids[i] == -1).squeeze(-1)
+        if len(first_pad_idx) > 0:
+            to_decode.append(output_ids[i, : first_pad_idx[0]].tolist())
+        else:
+            to_decode.append(output_ids[i].tolist())
+
+    return tokenizer.decode_batch(output_ids)

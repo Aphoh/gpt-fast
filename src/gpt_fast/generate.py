@@ -13,10 +13,10 @@ import torch._inductor.config
 from torch.nn.attention.flex_attention import BlockMask
 import tqdm
 
-from gpt_fast.inputs import Batch, read_ids, read_input_batches
-from gpt_fast.util import load_model
+from gpt_fast.inputs import Batch, read_ids, read_input_batches, write_outputs
+from gpt_fast.util import input_pos_from_start_inds, load_model
 from gpt_fast.model import Transformer
-from gpt_fast.tokenizer import get_tokenizer, tokenize_and_pad
+from gpt_fast.tokenizer import detokenize_output_ids, get_tokenizer, tokenize_and_pad
 from gpt_fast.mask_utils import make_base_gen_mask, make_prefill_mask
 
 
@@ -79,10 +79,21 @@ def decode_one_token(
     block_mask: BlockMask,
     **sampling_kwargs,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    # input_pos: [B, 1]
+    """
+    Decode a single tokenn from the model given the mask
+    x: [B, 1] input ids
+    input_pos: [B, 1] input position
+    block_mask: BlockMask the base mask for the generation
+
+    Returns (next_token: [B] next token,
+             next_prob: [B] probability of the next token)
+    """
+    B, _ = x.shape
     assert input_pos.shape[-1] == 1
+    assert x.shape[-1] == 1
     block_index = input_pos // block_mask.BLOCK_SIZE[0]
-    mask = block_mask[:, :, block_index]
+    # TODO: check this is getting it across the batch correctly
+    mask = block_mask[torch.arange(B, device=x.device), :, block_index]
     mask.mask_mod = block_mask.mask_mod
     mask.seq_lengths = (1, model.max_seq_length)
     logits = model(mask, x, input_pos)
@@ -95,78 +106,87 @@ def decode_n_tokens(
     start_inds: torch.Tensor,
     input_pos: torch.Tensor,
     num_new_tokens: int,
-    callback=lambda _: _,
     **sampling_kwargs,
-):
+) -> torch.IntTensor:
+    """
+    cur_token: [B] current token
+    start_inds: [B] start index of the unpadded input in input_ids
+    input_pos: [B] input position
+    num_new_tokens: int number of new tokens to generate
+    """
     block_mask = make_base_gen_mask(
         start_inds, model.max_seq_length, device=cur_token.device
     )
-    new_tokens, new_probs = [], []
+    new_tokens = []
     for i in range(num_new_tokens):
         next_token, next_prob = decode_one_token(
-            model, cur_token, input_pos, block_mask, **sampling_kwargs
+            model,
+            cur_token.unsqueeze(-1),
+            input_pos.unsqueeze(-1),
+            block_mask,
+            **sampling_kwargs,
         )
         input_pos += 1
         new_tokens.append(next_token.clone())
-        callback(new_tokens[-1])
-        new_probs.append(next_prob.clone())
         cur_token = next_token.clone()
 
-    return new_tokens, new_probs
-
-
-def model_forward(model, x, input_pos):
-    return model(x, input_pos)
+    return torch.cat(new_tokens, -1)
 
 
 @torch.no_grad()
 def generate(
     model: Transformer,
-    prompt: torch.Tensor,
+    input_ids: torch.Tensor,
+    start_inds: torch.Tensor,
+    max_seq_length: int,
     max_new_tokens: int,
-    batch_size: int,
+    *,
+    device: torch.device,
     **sampling_kwargs,
 ) -> torch.Tensor:
     """
-    Takes a conditioning sequence (prompt) as input and continues to generate as many tokens as requested.
+    input_ids: [B, S] left padded batch of input ids
+    start_inds: [B] start index of the unpadded input in input_ids
+    max_seq_length: int maximum sequence length
+    max_new_tokens: int maximum number of new tokens to generate
+
+    Returns output_ids: [B, new_tokens] batch of generated tokens.
+        Each output value ocurring after the stopping condition is hit has a value of -1.
     """
     # create an empty tensor of the expected final shape and fill in the current tokens
-    T = prompt.size(-1)
-    T_new = T + max_new_tokens
-    max_seq_length = min(T_new, model.config.block_size)
+    B, S = input_ids.shape
 
-    device, dtype = prompt.device, prompt.dtype
-    with torch.device(device):
-        model.setup_caches(max_batch_size=batch_size, max_seq_length=max_seq_length)
+    input_ids = input_ids.to(device=device)
+    start_inds = start_inds.to(device=device)
 
-    # create an empty tensor of the expected final shape and fill in the current tokens
-    empty = torch.empty(batch_size, T_new, dtype=dtype, device=device)
-    # We are just making the same prompt for every batch
-    prompt = prompt.view(1, -1).repeat(batch_size, 1)
-    empty[:, :T] = prompt
-    seq = empty
-    input_pos = torch.arange(0, T, device=device)
+    # This does mean the batching could cut stuff off if any prompt is too long, but let's just ignore that xD
+    max_output_size = min(max_seq_length - S, max_new_tokens)
+    output_ids = torch.empty(B, max_output_size, device=device, dtype=int)
+    prefill_input_pos = input_pos_from_start_inds(start_inds, S, device=device)
 
-    start_inds = torch.tensor([0], device=device)
     next_token = prefill(
-        start_inds, model, prompt.view(batch_size, -1), input_pos, **sampling_kwargs
+        start_inds=start_inds,
+        model=model,
+        x=input_ids,
+        input_pos=prefill_input_pos,
+        **sampling_kwargs,
     ).clone()
-    seq[:, T] = next_token.squeeze()
+    output_ids[:, 0] = next_token
 
-    input_pos = torch.tensor([T], device=device, dtype=torch.int)
+    input_pos = prefill_input_pos[:, -1] + 1
 
-    generated_tokens, _ = decode_n_tokens(
-        model,
-        next_token.view(batch_size, -1),
-        start_inds,
-        input_pos,
-        max_new_tokens - 1,
+    # TODO: stopping criteria
+    generated_tokens = decode_n_tokens(
+        model=model,
+        cur_token=output_ids[:, 0],
+        start_inds=start_inds,
+        input_pos=input_pos,
+        max_new_tokens=max_new_tokens - 1,
         **sampling_kwargs,
     )
-    seq[:, T + 1 :] = torch.cat(generated_tokens, dim=-1)
+    output_ids[:, 1 : 1 + generated_tokens.shape[-1]] = generated_tokens
 
-    generate_stats = {}
-    return seq, generate_stats
+    return output_ids
 
 
 def _load_model(checkpoint_path, device, precision, use_tp):
@@ -189,11 +209,12 @@ def main(
     input_file: Path,
     output_file: Path,
     max_new_tokens: int,
+    max_seq_length: Optional[int],
     batch_size: int,
     top_k: int,
     temperature: float,
     checkpoint_path: Path,
-    profile: Optional[Path],
+    compile: bool,
     device: torch.device,
 ) -> None:
     """Generates text samples based on a pre-trained Transformer model and tokenizer."""
@@ -231,28 +252,45 @@ def main(
     tokenizer = get_tokenizer(checkpoint_path.parent)
 
     torch.manual_seed(1234)
-    global decode_one_token, prefill
-    decode_one_token = torch.compile(
-        decode_one_token, mode="reduce-overhead", fullgraph=True
-    )
-
-    # Uncomment to squeeze more perf out of prefill
-    prefill = torch.compile(prefill, fullgraph=True, dynamic=True)
-
-    for batch in tqdm(input_iterator, desc="Generating"):
-        batch: Batch
-        device_sync(device=device)
-        batch_encoded = tokenize_and_pad(batch.texts, tokenizer, model.max_seq_length)
-        output, metrics = generate(
-            model,
-            batch_encoded.padded,
-            max_new_tokens,
-            batch_size,
-            interactive=False,
-            temperature=temperature,
-            top_k=top_k,
+    if compile:
+        # TODO: do this cleaner
+        global decode_one_token, prefill
+        decode_one_token = torch.compile(
+            decode_one_token, mode="reduce-overhead", fullgraph=True
         )
-        # TODO: Write output to file
+        prefill = torch.compile(prefill, fullgraph=True, dynamic=True)
+
+    if max_seq_length is not None:
+        assert max_seq_length <= model.max_seq_length, (
+            f"{max_seq_length} > {model.max_seq_length}"
+        )
+    else:
+        max_seq_length = model.max_seq_length
+
+    with device:
+        model.setup_caches(max_batch_size=batch_size, max_seq_length=max_seq_length)
+
+    with open(output_file, "a") as f:
+        for batch in tqdm(input_iterator, desc="Generating"):
+            batch: Batch
+            device_sync(device=device)
+            encoded = tokenize_and_pad(batch.texts, tokenizer, max_seq_length)
+            output = generate(
+                model=model,
+                input_ids=encoded.padded,
+                start_inds=encoded.start_inds,
+                max_seq_length=max_seq_length,
+                max_new_tokens=max_new_tokens,
+                device=device,
+                precision=precision,
+                # sampling kwargs
+                temperature=temperature,
+                top_k=top_k,
+            )
+
+            completions = detokenize_output_ids(output.cpu(), tokenizer)
+            write_outputs(f, batch, completions)
+            # TODO do I need a model.reset_caches()
 
 
 if __name__ == "__main__":
@@ -272,6 +310,11 @@ if __name__ == "__main__":
         "--max_new_tokens", type=int, default=200, help="Maximum number of new tokens."
     )
     parser.add_argument(
+        "--max_seq_length",
+        type=int,
+        help="Maximum sequence length for generation. Useful for limiting kv cache size.",
+    )
+    parser.add_argument(
         "--batch_size", type=int, default=4, help="Batch size to run with"
     )
     parser.add_argument("--top_k", type=int, default=200, help="Top-k for sampling.")
@@ -285,7 +328,13 @@ if __name__ == "__main__":
         default=Path("checkpoints/meta-Transformer/Transformer-2-7b-chat-hf/model.pth"),
         help="Model checkpoint path.",
     )
-    parser.add_argument("--profile", type=Path, default=None, help="Profile path.")
+    parser.add_argument(
+        "-n",
+        "--no_compile",
+        action="store_false",
+        dest="compile",
+        help="Skip compilation",
+    )
     parser.add_argument(
         "--device", type=str, default=default_device, help="Device to use"
     )
@@ -294,22 +343,23 @@ if __name__ == "__main__":
     input_file: Path = args.input_file
     output_file: Path = args.output_file
     max_new_tokens: int = args.max_new_tokens
+    max_seq_length: Optional[int] = args.max_seq_length
     batch_size: int = args.batch_size
     top_k: int = args.top_k
     temperature: float = args.temperature
     checkpoint_path: Path = args.checkpoint_path
-    profile: Optional[Path] = args.profile
+    compile: bool = args.compile
     device: torch.device = torch.device(args.device)
 
     args = parser.parse_args()
     main(
         input_file,
-        args.output_file,
-        args.max_new_tokens,
-        args.batch_size,
-        args.top_k,
-        args.temperature,
-        args.checkpoint_path,
-        args.profile,
-        args.device,
+        output_file,
+        max_new_tokens,
+        batch_size,
+        top_k,
+        temperature,
+        checkpoint_path,
+        compile,
+        device,
     )
