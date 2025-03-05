@@ -61,12 +61,18 @@ def prefill(
     model: Transformer,
     x: torch.Tensor,
     input_pos: torch.Tensor,
+    max_seq_length: int,
+    compile: bool = False,
     **sampling_kwargs,
 ) -> torch.Tensor:
     # start_inds: [B]
     # input_pos: [B, S]
     mask = make_prefill_mask(
-        start_inds, input_pos, device=x.device, max_seq_length=model.max_seq_length
+        start_inds,
+        input_pos,
+        device=x.device,
+        max_seq_length=max_seq_length,
+        compile=compile,
     )
     logits = model(mask, x, input_pos)
     return sample(logits, **sampling_kwargs)[0]
@@ -142,6 +148,7 @@ def generate(
     max_new_tokens: int,
     *,
     device: torch.device,
+    compile: bool = False,
     **sampling_kwargs,
 ) -> torch.Tensor:
     """
@@ -162,13 +169,15 @@ def generate(
     # This does mean the batching could cut stuff off if any prompt is too long, but let's just ignore that xD
     max_output_size = min(max_seq_length - S, max_new_tokens)
     output_ids = torch.empty(B, max_output_size, device=device, dtype=int)
-    prefill_input_pos = input_pos_from_start_inds(start_inds, S, device=device)
+    prefill_input_pos = input_pos_from_start_inds(start_inds, S)
 
     next_token = prefill(
         start_inds=start_inds,
         model=model,
         x=input_ids,
         input_pos=prefill_input_pos,
+        max_seq_length=max_seq_length,
+        compile=compile,
         **sampling_kwargs,
     ).clone()
     output_ids[:, 0] = next_token
@@ -283,6 +292,7 @@ def main(
                 max_new_tokens=max_new_tokens,
                 device=device,
                 precision=precision,
+                compile=compile,
                 # sampling kwargs
                 temperature=temperature,
                 top_k=top_k,

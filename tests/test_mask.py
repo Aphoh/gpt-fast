@@ -31,7 +31,7 @@ def test_left_pad_mask():
 
     check_mask(mask)
 
-    input_pos = torch.arange(S // 2)
+    input_pos = torch.arange(S // 2)[None, :].expand(B, S // 2)
     mask = make_prefill_mask(
         start_inds,
         input_pos,

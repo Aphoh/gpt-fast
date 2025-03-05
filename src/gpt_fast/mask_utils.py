@@ -53,7 +53,8 @@ def make_prefill_mask(
     **kwargs,
 ) -> BlockMask:
     (B,) = start_inds.shape
-    (S,) = input_pos.shape
+    assert input_pos.shape[0] == B
+    (_, S) = input_pos.shape
     return _create_block_mask_fn(compile)(
         _mask_mod(start_inds),
         B=B,
