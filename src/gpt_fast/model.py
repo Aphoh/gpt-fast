@@ -244,7 +244,7 @@ class KVCache(nn.Module):
         for b in range(B):
             valid_mask = input_pos[b] != -1  # [S]
             # Get valid indices
-            valid_indices = input_pos[b, valid_mask].squeeze(0)
+            valid_indices = input_pos[b, valid_mask]
             k_out[b, :, valid_indices] = k_val[b, :, valid_mask]
             v_out[b, :, valid_indices] = v_val[b, :, valid_mask]
         return k_out, v_out

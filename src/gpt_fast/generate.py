@@ -5,7 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 import torch._dynamo.config
@@ -17,7 +17,7 @@ from gpt_fast.inputs import Batch, read_ids, read_input_batches, write_outputs
 from gpt_fast.util import input_pos_from_start_inds, load_model
 from gpt_fast.model import Transformer
 from gpt_fast.tokenizer import detokenize_output_ids, get_tokenizer, tokenize_and_pad
-from gpt_fast.mask_utils import make_base_gen_mask, make_prefill_mask
+from gpt_fast.mask_utils import get_prefill_submask, make_base_mask, get_gen_submask
 
 
 def device_sync(device: str) -> None:
@@ -57,84 +57,45 @@ def sample(logits, temperature: float = 1.0, top_k: Optional[int] = None):
 
 
 def prefill(
-    start_inds: torch.Tensor,
+    base_mask: BlockMask,
     model: Transformer,
     x: torch.Tensor,
     input_pos: torch.Tensor,
-    max_seq_length: int,
-    compile: bool = False,
     **sampling_kwargs,
 ) -> torch.Tensor:
-    # start_inds: [B]
+    # x: [B, S]
     # input_pos: [B, S]
-    mask = make_prefill_mask(
-        start_inds,
-        input_pos,
-        device=x.device,
-        max_seq_length=max_seq_length,
-        compile=compile,
-    )
-    logits = model(mask, x, input_pos)
+    prefill_mask = get_prefill_submask(base_mask, x.shape[-1])
+    logits = model(prefill_mask, x, input_pos)
     return sample(logits, **sampling_kwargs)[0]
 
 
-def decode_one_token(
-    model: Transformer,
-    x: torch.Tensor,
-    input_pos: torch.Tensor,
-    block_mask: BlockMask,
-    **sampling_kwargs,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Decode a single tokenn from the model given the mask
-    x: [B, 1] input ids
-    input_pos: [B, 1] input position
-    block_mask: BlockMask the base mask for the generation
-
-    Returns (next_token: [B] next token,
-             next_prob: [B] probability of the next token)
-    """
-    B, _ = x.shape
-    assert input_pos.shape[-1] == 1
-    assert x.shape[-1] == 1
-    block_index = input_pos // block_mask.BLOCK_SIZE[0]
-    # TODO: check this is getting it across the batch correctly
-    mask = block_mask[torch.arange(B, device=x.device), :, block_index]
-    mask.mask_mod = block_mask.mask_mod
-    mask.seq_lengths = (1, model.max_seq_length)
-    logits = model(mask, x, input_pos)
-    return sample(logits, **sampling_kwargs)
-
-
 def decode_n_tokens(
+    base_mask: BlockMask,
+    query_pos: int,
     model: Transformer,
     cur_token: torch.Tensor,
-    start_inds: torch.Tensor,
     input_pos: torch.Tensor,
-    num_new_tokens: int,
+    max_new_tokens: int,
     **sampling_kwargs,
 ) -> torch.IntTensor:
     """
     cur_token: [B] current token
-    start_inds: [B] start index of the unpadded input in input_ids
     input_pos: [B] input position
     num_new_tokens: int number of new tokens to generate
     """
-    block_mask = make_base_gen_mask(
-        start_inds, model.max_seq_length, device=cur_token.device
-    )
+    assert cur_token.shape == input_pos.shape
     new_tokens = []
-    for i in range(num_new_tokens):
-        next_token, next_prob = decode_one_token(
-            model,
-            cur_token.unsqueeze(-1),
-            input_pos.unsqueeze(-1),
-            block_mask,
-            **sampling_kwargs,
+    for i in range(max_new_tokens):
+        gen_mask_i = get_gen_submask(base_mask, query_pos)
+        logits = model(
+            gen_mask_i, cur_token.unsqueeze(-1), input_pos=input_pos.unsqueeze(-1)
         )
+        next_token, _ = sample(logits, **sampling_kwargs)
         input_pos += 1
+        query_pos += 1
         new_tokens.append(next_token.clone())
-        cur_token = next_token.clone()
+        cur_token = next_token[:, 0].clone()
 
     return torch.cat(new_tokens, -1)
 
@@ -167,33 +128,35 @@ def generate(
     start_inds = start_inds.to(device=device)
 
     # This does mean the batching could cut stuff off if any prompt is too long, but let's just ignore that xD
-    max_output_size = min(max_seq_length - S, max_new_tokens)
-    output_ids = torch.empty(B, max_output_size, device=device, dtype=int)
+    output_ids = torch.empty(B, max_seq_length, device=device, dtype=int)
+    output_ids[:, :S] = input_ids
     prefill_input_pos = input_pos_from_start_inds(start_inds, S)
+    base_mask = make_base_mask(
+        start_inds, max_seq_length, device=device, compile=compile
+    )
 
     next_token = prefill(
-        start_inds=start_inds,
+        base_mask=base_mask,
         model=model,
         x=input_ids,
         input_pos=prefill_input_pos,
-        max_seq_length=max_seq_length,
-        compile=compile,
         **sampling_kwargs,
     ).clone()
-    output_ids[:, 0] = next_token
+    output_ids[:, S] = next_token.squeeze(1)
 
     input_pos = prefill_input_pos[:, -1] + 1
 
     # TODO: stopping criteria
     generated_tokens = decode_n_tokens(
+        base_mask=base_mask,
+        query_pos=S + 1,
         model=model,
-        cur_token=output_ids[:, 0],
-        start_inds=start_inds,
+        cur_token=output_ids[:, S],
         input_pos=input_pos,
         max_new_tokens=max_new_tokens - 1,
         **sampling_kwargs,
     )
-    output_ids[:, 1 : 1 + generated_tokens.shape[-1]] = generated_tokens
+    output_ids[:, S + 1 : S + 1 + generated_tokens.shape[-1]] = generated_tokens
 
     return output_ids
 
@@ -297,6 +260,7 @@ def main(
                 temperature=temperature,
                 top_k=top_k,
             )
+            # TODO: postprocess?
 
             completions = detokenize_output_ids(output.cpu(), tokenizer)
             write_outputs(f, batch, completions)
@@ -315,7 +279,13 @@ if __name__ == "__main__":
         help="Input jsonl with 'prompt' and 'id' keys",
         default=Path("sample_input.jsonl"),
     )
-    parser.add_argument("-o", "--output_file", type=Path, help="Output jsonl path")
+    parser.add_argument(
+        "-o",
+        "--output_file",
+        type=Path,
+        default=Path("sample_output.jsonl"),
+        help="Output jsonl path",
+    )
     parser.add_argument(
         "--max_new_tokens", type=int, default=200, help="Maximum number of new tokens."
     )
@@ -363,13 +333,14 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     main(
-        input_file,
-        output_file,
-        max_new_tokens,
-        batch_size,
-        top_k,
-        temperature,
-        checkpoint_path,
-        compile,
-        device,
+        input_file=input_file,
+        output_file=output_file,
+        max_new_tokens=max_new_tokens,
+        max_seq_length=max_seq_length,
+        batch_size=batch_size,
+        top_k=top_k,
+        temperature=temperature,
+        checkpoint_path=checkpoint_path,
+        compile=compile,
+        device=device,
     )
