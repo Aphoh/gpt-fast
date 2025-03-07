@@ -33,17 +33,14 @@ def test_prefill(test_model: Transformer):
 
     test_model.setup_caches(batch_size, max_seq_length)
 
-    base_mask = make_base_mask(
-        start_inds, max_seq_length, compile=False, device=start_inds.device
-    )
-
     # Call generate function
     with torch.no_grad():
         _ = prefill(
-            base_mask=base_mask,
             model=test_model,
             x=input_ids,
             input_pos=input_pos,
+            start_inds=start_inds,
+            max_seq_length=max_seq_length
         )
 
 
@@ -59,7 +56,7 @@ def test_decode_n(test_model: Transformer):
     test_model.setup_caches(batch_size, max_seq_length)
 
     base_mask = make_base_mask(
-        start_inds, max_seq_length, compile=False, device=start_inds.device
+        batch_size, max_seq_length, max_seq_length, device=start_inds.device
     )
 
     test_model.forward = torch.compile(test_model.forward)
@@ -70,6 +67,7 @@ def test_decode_n(test_model: Transformer):
             base_mask=base_mask,
             query_pos=prompt_seq_length,
             model=test_model,
+            start_inds=start_inds,
             cur_token=input_ids,
             input_pos=input_pos,
             max_new_tokens=4,

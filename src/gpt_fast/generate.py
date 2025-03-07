@@ -10,14 +10,17 @@ from typing import Optional
 import torch
 import torch._dynamo.config
 import torch._inductor.config
-from torch.nn.attention.flex_attention import BlockMask
+from torch.nn.attention.flex_attention import BlockMask, _mask_mod_signature
 from tqdm import tqdm
 
 from gpt_fast.inputs import Batch, read_ids, read_input_batches, write_outputs
 from gpt_fast.util import input_pos_from_start_inds, load_model
 from gpt_fast.model import Transformer
 from gpt_fast.tokenizer import detokenize_output_ids, get_tokenizer, tokenize_and_pad
-from gpt_fast.mask_utils import get_prefill_submask, make_base_mask, get_gen_submask
+from gpt_fast.mask_utils import (
+    make_base_mask,
+    get_gen_submask,
+)
 
 
 def device_sync(device: torch.device) -> None:
@@ -56,30 +59,43 @@ def sample(logits, temperature: float = 1.0, top_k: Optional[int] = None):
     return idx_next, probs
 
 
+@torch.compile(fullgraph=True, dynamic=True)
 def prefill(
-    prefill_mask: BlockMask,
     model: Transformer,
     x: torch.Tensor,
     input_pos: torch.Tensor,
+    start_inds: torch.Tensor,
+    max_seq_length: int,
     **sampling_kwargs,
 ) -> torch.Tensor:
     # x: [B, S]
     # input_pos: [B, S]
-    logits = model(prefill_mask, x, input_pos)
+    prefill_mask = make_base_mask(
+        x.shape[0],
+        x.shape[1],
+        max_seq_length,
+        device=x.device,
+    )
+    logits = model(prefill_mask, x, input_pos, start_inds, offset=0)
     return sample(logits, **sampling_kwargs)[0]
 
 
+@torch.compile(mode="reduce-overhead", fullgraph=True)
 def decode_one_token(
-    base_mask: BlockMask,
-    query_pos: int,
+    gen_mask_i: BlockMask,
     model: Transformer,
     cur_token: torch.Tensor,
+    start_inds: torch.Tensor,
     input_pos: torch.Tensor,
+    offset: int,
     **sampling_kwargs,
 ) -> torch.IntTensor:
-    gen_mask_i = get_gen_submask(base_mask, query_pos)
     logits = model(
-        gen_mask_i, cur_token.unsqueeze(-1), input_pos=input_pos.unsqueeze(-1)
+        gen_mask_i,
+        cur_token.unsqueeze(-1),
+        input_pos=input_pos.unsqueeze(-1),
+        start_inds=start_inds,
+        offset=offset,
     )
     next_token, _ = sample(logits, **sampling_kwargs)
     return next_token
@@ -90,6 +106,7 @@ def decode_n_tokens(
     query_pos: int,
     model: Transformer,
     cur_token: torch.Tensor,
+    start_inds: torch.Tensor,
     input_pos: torch.Tensor,
     max_new_tokens: int,
     **sampling_kwargs,
@@ -102,8 +119,9 @@ def decode_n_tokens(
     assert cur_token.shape == input_pos.shape
     new_tokens = []
     for i in range(max_new_tokens):
+        gen_mask_i = get_gen_submask(base_mask, query_pos)
         next_token = decode_one_token(
-            base_mask, query_pos, model, cur_token, input_pos, **sampling_kwargs
+            gen_mask_i, model, cur_token, start_inds, input_pos, offset=query_pos, **sampling_kwargs
         )
         input_pos += 1
         query_pos += 1
@@ -122,7 +140,6 @@ def generate(
     max_new_tokens: int,
     *,
     device: torch.device,
-    compile: bool = False,
     **sampling_kwargs,
 ) -> torch.Tensor:
     """
@@ -144,16 +161,13 @@ def generate(
     output_ids = torch.empty(B, max_seq_length, device=device, dtype=int)
     output_ids[:, :S] = input_ids
     prefill_input_pos = input_pos_from_start_inds(start_inds, S)
-    base_mask = make_base_mask(
-        start_inds, max_seq_length, device=device, compile=compile
-    )
 
-    prefill_mask = get_prefill_submask(base_mask, input_ids.shape[-1])
     next_token = prefill(
-        prefill_mask=prefill_mask,
         model=model,
         x=input_ids,
         input_pos=prefill_input_pos,
+        start_inds=start_inds,
+        max_seq_length=max_seq_length,
         **sampling_kwargs,
     ).clone()
     output_ids[:, S] = next_token.squeeze(1)
@@ -161,11 +175,15 @@ def generate(
     input_pos = prefill_input_pos[:, -1] + 1
 
     # TODO: stopping criteria
+    base_mask = make_base_mask(
+        B, max_seq_length, max_seq_length, device=device
+    )
     generated_tokens = decode_n_tokens(
         base_mask=base_mask,
         query_pos=S + 1,
         model=model,
         cur_token=output_ids[:, S],
+        start_inds=start_inds,
         input_pos=input_pos,
         max_new_tokens=max_new_tokens - 1,
         **sampling_kwargs,
@@ -238,13 +256,13 @@ def main(
     tokenizer = get_tokenizer(checkpoint_path.parent)
 
     torch.manual_seed(1234)
-    if compile:
-        # TODO: do this cleaner
-        global prefill, decode_one_token
-        decode_one_token = torch.compile(
-            decode_one_token, mode="reduce-overhead", fullgraph=True
-        )
-        prefill = torch.compile(prefill, fullgraph=True, dynamic=True)
+    # if compile:
+    #    # TODO: do this cleaner
+    #    global prefill, decode_one_token
+    #    decode_one_token = torch.compile(
+    #        decode_one_token, mode="reduce-overhead", fullgraph=True
+    #    )
+    #    prefill = torch.compile(prefill, fullgraph=True, dynamic=True)
 
     if max_seq_length is not None:
         assert max_seq_length <= model.config.block_size, (
@@ -268,7 +286,6 @@ def main(
                 max_seq_length=max_seq_length,
                 max_new_tokens=max_new_tokens,
                 device=device,
-                compile=compile,
                 # sampling kwargs
                 temperature=temperature,
                 top_k=top_k,

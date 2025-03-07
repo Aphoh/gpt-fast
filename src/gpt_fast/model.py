@@ -14,20 +14,13 @@ from torch import Tensor
 from torch.nn import functional as F
 from torch.nn.attention.flex_attention import _mask_mod_signature, BlockMask
 from gpt_fast.util import flex_attention_maybe_pad
+from gpt_fast.mask_utils import left_pad_mask_mod
 
 
 def find_multiple(n: int, k: int) -> int:
     if n % k == 0:
         return n
     return n + k - (n % k)
-
-
-def get_mask_mod(mask_mod: _mask_mod_signature, offset: int):
-    def _mask_mod(b, h, q, kv):
-        return mask_mod(b, h, q + offset, kv)
-
-    return _mask_mod
-
 
 @dataclass
 class ModelArgs:
@@ -266,7 +259,7 @@ class Transformer(nn.Module):
         self.mask_cache: Optional[Tensor] = None
         self.max_batch_size = -1
         self.max_seq_length = -1
-        self.get_mask_mod = get_mask_mod
+        self.left_pad_mask_mod = left_pad_mask_mod
 
     def setup_caches(self, max_batch_size, max_seq_length):
         if (
@@ -301,10 +294,10 @@ class Transformer(nn.Module):
         )
 
     def forward(
-        self, mask: BlockMask, idx: Tensor, input_pos: Optional[Tensor] = None
+        self, mask: BlockMask, idx: Tensor, input_pos: Tensor, start_inds: Tensor, offset: int = 0
     ) -> Tensor:
         assert self.freqs_cis is not None, "Caches must be initialized first"
-        mask.mask_mod = self.get_mask_mod(mask.mask_mod, input_pos[0])
+        mask.mask_mod = self.left_pad_mask_mod(start_inds, offset)
         freqs_cis = self.freqs_cis[input_pos]
         x = self.tok_embeddings(idx)
 
