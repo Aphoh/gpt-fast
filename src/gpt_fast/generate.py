@@ -11,7 +11,7 @@ import torch
 import torch._dynamo.config
 import torch._inductor.config
 from torch.nn.attention.flex_attention import BlockMask
-import tqdm
+from tqdm import tqdm
 
 from gpt_fast.inputs import Batch, read_ids, read_input_batches, write_outputs
 from gpt_fast.util import input_pos_from_start_inds, load_model
@@ -20,10 +20,10 @@ from gpt_fast.tokenizer import detokenize_output_ids, get_tokenizer, tokenize_an
 from gpt_fast.mask_utils import get_prefill_submask, make_base_mask, get_gen_submask
 
 
-def device_sync(device: str) -> None:
-    if "cuda" in device:
+def device_sync(device: torch.device) -> None:
+    if "cuda" in device.type:
         torch.cuda.synchronize(device)
-    elif ("cpu" in device) or ("mps" in device):
+    elif ("cpu" in device.type) or ("mps" in device.type):
         pass
     else:
         print(f"device={device} is not yet suppported")
@@ -226,18 +226,18 @@ def main(
     torch.manual_seed(1234)
     if compile:
         # TODO: do this cleaner
-        global decode_one_token, prefill
-        decode_one_token = torch.compile(
-            decode_one_token, mode="reduce-overhead", fullgraph=True
+        global prefill
+        model.forward = torch.compile(
+            model.forward, mode="reduce-overhead", fullgraph=True
         )
         prefill = torch.compile(prefill, fullgraph=True, dynamic=True)
 
     if max_seq_length is not None:
-        assert max_seq_length <= model.max_seq_length, (
-            f"{max_seq_length} > {model.max_seq_length}"
+        assert max_seq_length <= model.config.block_size, (
+            f"{max_seq_length} > {model.config.max_seq_length}"
         )
     else:
-        max_seq_length = model.max_seq_length
+        max_seq_length = model.config.block_size
 
     with device:
         model.setup_caches(max_batch_size=batch_size, max_seq_length=max_seq_length)
@@ -277,7 +277,7 @@ if __name__ == "__main__":
         "--input_file",
         type=Path,
         help="Input jsonl with 'prompt' and 'id' keys",
-        default=Path("sample_input.jsonl"),
+        default=Path("samples/sample_input.jsonl"),
     )
     parser.add_argument(
         "-o",
