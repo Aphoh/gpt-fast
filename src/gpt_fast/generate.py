@@ -57,7 +57,7 @@ def sample(logits, temperature: float = 1.0, top_k: Optional[int] = None):
 
 
 def prefill(
-    base_mask: BlockMask,
+    prefill_mask: BlockMask,
     model: Transformer,
     x: torch.Tensor,
     input_pos: torch.Tensor,
@@ -65,9 +65,24 @@ def prefill(
 ) -> torch.Tensor:
     # x: [B, S]
     # input_pos: [B, S]
-    prefill_mask = get_prefill_submask(base_mask, x.shape[-1])
     logits = model(prefill_mask, x, input_pos)
     return sample(logits, **sampling_kwargs)[0]
+
+
+def decode_one_token(
+    base_mask: BlockMask,
+    query_pos: int,
+    model: Transformer,
+    cur_token: torch.Tensor,
+    input_pos: torch.Tensor,
+    **sampling_kwargs,
+) -> torch.IntTensor:
+    gen_mask_i = get_gen_submask(base_mask, query_pos)
+    logits = model(
+        gen_mask_i, cur_token.unsqueeze(-1), input_pos=input_pos.unsqueeze(-1)
+    )
+    next_token, _ = sample(logits, **sampling_kwargs)
+    return next_token
 
 
 def decode_n_tokens(
@@ -87,11 +102,9 @@ def decode_n_tokens(
     assert cur_token.shape == input_pos.shape
     new_tokens = []
     for i in range(max_new_tokens):
-        gen_mask_i = get_gen_submask(base_mask, query_pos)
-        logits = model(
-            gen_mask_i, cur_token.unsqueeze(-1), input_pos=input_pos.unsqueeze(-1)
+        next_token = decode_one_token(
+            base_mask, query_pos, model, cur_token, input_pos, **sampling_kwargs
         )
-        next_token, _ = sample(logits, **sampling_kwargs)
         input_pos += 1
         query_pos += 1
         new_tokens.append(next_token.clone())
@@ -135,8 +148,9 @@ def generate(
         start_inds, max_seq_length, device=device, compile=compile
     )
 
+    prefill_mask = get_prefill_submask(base_mask, input_ids.shape[-1])
     next_token = prefill(
-        base_mask=base_mask,
+        prefill_mask=prefill_mask,
         model=model,
         x=input_ids,
         input_pos=prefill_input_pos,
@@ -226,9 +240,9 @@ def main(
     torch.manual_seed(1234)
     if compile:
         # TODO: do this cleaner
-        global prefill
-        model.forward = torch.compile(
-            model.forward, mode="reduce-overhead", fullgraph=True
+        global prefill, decode_one_token
+        decode_one_token = torch.compile(
+            decode_one_token, mode="reduce-overhead", fullgraph=True
         )
         prefill = torch.compile(prefill, fullgraph=True, dynamic=True)
 
@@ -254,7 +268,6 @@ def main(
                 max_seq_length=max_seq_length,
                 max_new_tokens=max_new_tokens,
                 device=device,
-                precision=precision,
                 compile=compile,
                 # sampling kwargs
                 temperature=temperature,

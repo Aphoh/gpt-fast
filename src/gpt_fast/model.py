@@ -242,11 +242,9 @@ class KVCache(nn.Module):
         # Handle each batch separately
         # TODO: does this compile ok?
         for b in range(B):
-            valid_mask = input_pos[b] != -1  # [S]
             # Get valid indices
-            valid_indices = input_pos[b, valid_mask]
-            k_out[b, :, valid_indices] = k_val[b, :, valid_mask]
-            v_out[b, :, valid_indices] = v_val[b, :, valid_mask]
+            k_out[b, :, input_pos[b]] = k_val[b, :]
+            v_out[b, :, input_pos[b]] = v_val[b, :]
         return k_out, v_out
 
 

@@ -51,6 +51,7 @@ def get_prefill_submask(
     q_block_size = mask.BLOCK_SIZE[0]
     prefill_mask = mask[:, :, : (query_len // q_block_size) + 1]
     prefill_mask.seq_lengths = (query_len, mask.seq_lengths[1])
+    prefill_mask.mask_mod = mask.mask_mod
     return prefill_mask
 
 
@@ -60,6 +61,7 @@ def get_gen_submask(
 ) -> BlockMask:
     q_block_size = mask.BLOCK_SIZE[0]
     block_idx = query_idx // q_block_size
-    gen_mask = mask[:, :, block_idx : block_idx + 1]
+    gen_mask = mask[:, :, block_idx]
     gen_mask.seq_lengths = (1, mask.seq_lengths[1])
+    gen_mask.mask_mod = mask.mask_mod
     return gen_mask

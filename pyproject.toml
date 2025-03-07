@@ -15,6 +15,7 @@ dependencies = [
     "safetensors",
     "tokenizers",
     "huggingface_hub",
+    "numpy",
 ]
 
 [dependency-groups]
