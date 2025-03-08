@@ -59,7 +59,7 @@ def sample(logits, temperature: float = 1.0, top_k: Optional[int] = None):
     return idx_next, probs
 
 
-@torch.compile(fullgraph=True, dynamic=True)
+@torch.compile(fullgraph=True, dynamic=False)
 def prefill(
     model: Transformer,
     x: torch.Tensor,
@@ -76,18 +76,19 @@ def prefill(
         max_seq_length,
         device=x.device,
     )
-    logits = model(prefill_mask, x, input_pos, start_inds, offset=0)
+    offset = torch.tensor([0], device=x.device)
+    logits = model(prefill_mask, x, input_pos, start_inds, offset=offset)
     return sample(logits, **sampling_kwargs)[0]
 
 
-@torch.compile(mode="reduce-overhead", fullgraph=True)
+@torch.compile(mode="reduce-overhead", fullgraph=True, dynamic=False)
 def decode_one_token(
     gen_mask_i: BlockMask,
     model: Transformer,
     cur_token: torch.Tensor,
     start_inds: torch.Tensor,
     input_pos: torch.Tensor,
-    offset: int,
+    offset: torch.Tensor,
     **sampling_kwargs,
 ) -> torch.IntTensor:
     logits = model(
@@ -118,10 +119,11 @@ def decode_n_tokens(
     """
     assert cur_token.shape == input_pos.shape
     new_tokens = []
-    for i in range(max_new_tokens):
+    for i in tqdm(range(max_new_tokens), desc="generating", leave=False):
         gen_mask_i = get_gen_submask(base_mask, query_pos)
+        offset = torch.tensor([query_pos], device=cur_token.device)
         next_token = decode_one_token(
-            gen_mask_i, model, cur_token, start_inds, input_pos, offset=query_pos, **sampling_kwargs
+            gen_mask_i, model, cur_token, start_inds, input_pos, offset=offset, **sampling_kwargs
         )
         input_pos += 1
         query_pos += 1
@@ -295,8 +297,9 @@ def main(
             )
             # TODO: postprocess?
 
-            encoded.start_inds[:-n_trim]
-            output = output[:-n_trim]
+            if n_trim != 0:
+                encoded.start_inds[:-n_trim]
+                output = output[:-n_trim]
             completions = detokenize_output_ids(encoded.start_inds, output.cpu(), tokenizer)
             write_outputs(f, batch, completions)
             # TODO do I need a model.reset_caches()

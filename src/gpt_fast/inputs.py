@@ -68,3 +68,4 @@ def write_outputs(output_file: TextIO, batch: Batch, outputs: List[str]) -> None
         output_file.write(
             json.dumps({"input_text": input_text, "id": _id, "output": output}) + "\n"
         )
+        output_file.flush()

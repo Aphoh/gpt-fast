@@ -294,7 +294,7 @@ class Transformer(nn.Module):
         )
 
     def forward(
-        self, mask: BlockMask, idx: Tensor, input_pos: Tensor, start_inds: Tensor, offset: int = 0
+        self, mask: BlockMask, idx: Tensor, input_pos: Tensor, start_inds: Tensor, offset: torch.Tensor,
     ) -> Tensor:
         assert self.freqs_cis is not None, "Caches must be initialized first"
         mask.mask_mod = self.left_pad_mask_mod(start_inds, offset)

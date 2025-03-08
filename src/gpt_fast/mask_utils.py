@@ -13,7 +13,7 @@ def _causal_mask(b, h, q, kv):
 
 def left_pad_mask_mod(start_inds, offset) -> _mask_mod_signature:
     def _skip_left_pad_mask(b, h, q, kv):
-        return (kv >= start_inds[b]) & ((q + offset) >= kv)
+        return (kv >= start_inds[b]) & ((q + offset[0]) >= kv)
 
     return _skip_left_pad_mask
 
@@ -33,7 +33,8 @@ def get_gen_submask(
 ) -> BlockMask:
     q_block_size = mask.BLOCK_SIZE[0]
     block_idx = query_idx // q_block_size
-    gen_mask = mask[:, :, block_idx:block_idx+1]
+    #gen_mask = mask[:, :, block_idx:block_idx+1]
+    gen_mask = mask[:, :, block_idx]
     gen_mask.seq_lengths = (1, mask.seq_lengths[1])
     gen_mask.mask_mod = mask.mask_mod
     return gen_mask
