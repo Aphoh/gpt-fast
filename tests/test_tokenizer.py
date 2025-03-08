@@ -2,7 +2,7 @@ import pytest
 import torch
 from pathlib import Path
 from typing import List
-from gpt_fast.tokenizer import tokenize_and_pad, PaddedOutput, TokenizerInterface
+from gpt_fast.tokenizer import detokenize_output_ids, tokenize_and_pad, PaddedOutput, TokenizerInterface
 
 
 class MockTokenizer(TokenizerInterface):
@@ -108,3 +108,20 @@ def test_tokenize_and_pad_invalid_max_length():
     with pytest.raises(AssertionError):
         # max_length is not a multiple of pad_to_multiple
         tokenize_and_pad(texts, tokenizer, max_length=10, pad_to_multiple=8)
+
+
+def test_detokenize_output_ids():
+    tokenizer = MockTokenizer()
+    texts = ["".join(["test"] * (a+2)) for a in range(4)]
+    encoded = tokenize_and_pad(texts, tokenizer, 256, pad_to_multiple=32)
+    assert list(encoded.padded.shape) == [4,32]
+    encoded.padded[0, -4:] = -1 # should leave "test"
+    encoded.padded[1, -8:] = -1 # should leave "test"
+    print(encoded.start_inds)
+    detok = detokenize_output_ids(encoded.start_inds, encoded.padded, tokenizer)
+    assert detok == [
+        "test",
+        "test",
+        "test"*4,
+        "test"*5,
+    ]

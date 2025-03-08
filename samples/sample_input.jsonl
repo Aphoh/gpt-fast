@@ -1,9 +1,30 @@
-{"text": "<bos>INPUT SAMPLE 1", "id": "1"}
-{"text": "<bos>INPUT SAMPLE 2", "id": "2"}
-{"text": "<bos>INPUT SAMPLE 3", "id": "3"}
-{"text": "<bos>INPUT SAMPLE 4", "id": "4"}
-{"text": "<bos>INPUT SAMPLE 5", "id": "5"}
-{"text": "<bos>INPUT SAMPLE 6", "id": "6"}
-{"text": "<bos>INPUT SAMPLE 7", "id": "7"}
-{"text": "<bos>INPUT SAMPLE 8", "id": "8"}
-{"text": "<bos>INPUT SAMPLE 9", "id": "9"}
+{"text": "<s>let's hear a story about the number 000", "id": "000"}
+{"text": "<s>let's hear a story about the number 001", "id": "001"}
+{"text": "<s>let's hear a story about the number 002", "id": "002"}
+{"text": "<s>let's hear a story about the number 003", "id": "003"}
+{"text": "<s>let's hear a story about the number 004", "id": "004"}
+{"text": "<s>let's hear a story about the number 005", "id": "005"}
+{"text": "<s>let's hear a story about the number 006", "id": "006"}
+{"text": "<s>let's hear a story about the number 007", "id": "007"}
+{"text": "<s>let's hear a story about the number 008", "id": "008"}
+{"text": "<s>let's hear a story about the number 009", "id": "009"}
+{"text": "<s>let's hear a story about the number 010", "id": "010"}
+{"text": "<s>let's hear a story about the number 011", "id": "011"}
+{"text": "<s>let's hear a story about the number 012", "id": "012"}
+{"text": "<s>let's hear a story about the number 013", "id": "013"}
+{"text": "<s>let's hear a story about the number 014", "id": "014"}
+{"text": "<s>let's hear a story about the number 015", "id": "015"}
+{"text": "<s>let's hear a story about the number 016", "id": "016"}
+{"text": "<s>let's hear a story about the number 017", "id": "017"}
+{"text": "<s>let's hear a story about the number 018", "id": "018"}
+{"text": "<s>let's hear a story about the number 019", "id": "019"}
+{"text": "<s>let's hear a story about the number 020", "id": "020"}
+{"text": "<s>let's hear a story about the number 021", "id": "021"}
+{"text": "<s>let's hear a story about the number 022", "id": "022"}
+{"text": "<s>let's hear a story about the number 023", "id": "023"}
+{"text": "<s>let's hear a story about the number 024", "id": "024"}
+{"text": "<s>let's hear a story about the number 025", "id": "025"}
+{"text": "<s>let's hear a story about the number 026", "id": "026"}
+{"text": "<s>let's hear a story about the number 027", "id": "027"}
+{"text": "<s>let's hear a story about the number 028", "id": "028"}
+{"text": "<s>let's hear a story about the number 029", "id": "029"}

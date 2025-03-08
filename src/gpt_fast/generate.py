@@ -158,7 +158,7 @@ def generate(
     start_inds = start_inds.to(device=device)
 
     # This does mean the batching could cut stuff off if any prompt is too long, but let's just ignore that xD
-    output_ids = torch.empty(B, max_seq_length, device=device, dtype=int)
+    output_ids = torch.empty(B, S + max_new_tokens, device=device, dtype=int)
     output_ids[:, :S] = input_ids
     prefill_input_pos = input_pos_from_start_inds(start_inds, S)
 
@@ -277,6 +277,9 @@ def main(
     with open(output_file, "a") as f:
         for batch in tqdm(input_iterator, desc="Generating"):
             batch: Batch
+            n_trim = (batch_size - len(batch.texts))
+            if n_trim != 0:
+                batch.texts.extend(["pad"] * (n_trim))
             device_sync(device=device)
             encoded = tokenize_and_pad(batch.texts, tokenizer, max_seq_length)
             output = generate(
@@ -292,7 +295,9 @@ def main(
             )
             # TODO: postprocess?
 
-            completions = detokenize_output_ids(output.cpu(), tokenizer)
+            encoded.start_inds[:-n_trim]
+            output = output[:-n_trim]
+            completions = detokenize_output_ids(encoded.start_inds, output.cpu(), tokenizer)
             write_outputs(f, batch, completions)
             # TODO do I need a model.reset_caches()
 

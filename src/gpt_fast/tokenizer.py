@@ -99,7 +99,7 @@ def tokenize_and_pad(
     )
 
     tokenized = tokenizer.encode_batch(texts)
-    tensors = [torch.tensor(t) for t in tokenized]
+    tensors = [torch.tensor(t, dtype=int) for t in tokenized]
     longest_seq = max(len(t) for t in tensors)
     final_len = min(_round_to_multiple(longest_seq, pad_to_multiple), max_length)
     # Pad sequences to the same length
@@ -114,7 +114,7 @@ def tokenize_and_pad(
     return PaddedOutput(start_inds=torch.tensor(start_inds), padded=padded)
 
 
-def detokenize_output_ids(output_ids: torch.IntTensor, tokenizer: TokenizerInterface):
+def detokenize_output_ids(start_inds: torch.IntTensor, output_ids: torch.IntTensor, tokenizer: TokenizerInterface):
     """
     Detokenizes a list of output ids.
 
@@ -128,11 +128,9 @@ def detokenize_output_ids(output_ids: torch.IntTensor, tokenizer: TokenizerInter
     assert output_ids.ndim == 2
     B, S = output_ids.shape
     to_decode = []
-    for i in range(output_ids.shape[0]):
+    for i in range(B):
         first_pad_idx = torch.argwhere(output_ids[i] == -1).squeeze(-1)
-        if len(first_pad_idx) > 0:
-            to_decode.append(output_ids[i, : first_pad_idx[0]].tolist())
-        else:
-            to_decode.append(output_ids[i].tolist())
+        end_idx = first_pad_idx[0] if len(first_pad_idx) > 0 else S
+        to_decode.append(output_ids[i, start_inds[i] : end_idx].tolist())
 
     return tokenizer.decode_batch(to_decode)
