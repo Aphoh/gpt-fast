@@ -1,6 +1,5 @@
 from gpt_fast.mask_utils import (
     make_base_mask,
-    get_prefill_submask,
     get_gen_submask,
 )
 import torch

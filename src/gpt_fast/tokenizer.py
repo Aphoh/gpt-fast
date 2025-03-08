@@ -125,6 +125,8 @@ def detokenize_output_ids(output_ids: torch.IntTensor, tokenizer: TokenizerInter
     Returns:
     - List[str]: A list of detokenized sequences.
     """
+    assert output_ids.ndim == 2
+    B, S = output_ids.shape
     to_decode = []
     for i in range(output_ids.shape[0]):
         first_pad_idx = torch.argwhere(output_ids[i] == -1).squeeze(-1)
@@ -133,4 +135,4 @@ def detokenize_output_ids(output_ids: torch.IntTensor, tokenizer: TokenizerInter
         else:
             to_decode.append(output_ids[i].tolist())
 
-    return tokenizer.decode_batch(output_ids)
+    return tokenizer.decode_batch(to_decode)
