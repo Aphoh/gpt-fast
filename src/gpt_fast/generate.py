@@ -258,13 +258,6 @@ def main(
     tokenizer = get_tokenizer(checkpoint_path.parent)
 
     torch.manual_seed(1234)
-    # if compile:
-    #    # TODO: do this cleaner
-    #    global prefill, decode_one_token
-    #    decode_one_token = torch.compile(
-    #        decode_one_token, mode="reduce-overhead", fullgraph=True
-    #    )
-    #    prefill = torch.compile(prefill, fullgraph=True, dynamic=True)
 
     if max_seq_length is not None:
         assert max_seq_length <= model.config.block_size, (
