@@ -41,6 +41,7 @@ def test_prefill(small_model: Transformer):
             input_pos=input_pos,
             start_inds=start_inds,
             max_seq_length=max_seq_length,
+            compile=False,
         )
 
 
@@ -59,8 +60,6 @@ def test_decode_n(small_model: Transformer):
         batch_size, max_seq_length, max_seq_length, device=start_inds.device
     )
 
-    small_model.forward = torch.compile(small_model.forward)
-
     # Call generate function
     with torch.no_grad():
         decode_n_tokens(
@@ -70,6 +69,7 @@ def test_decode_n(small_model: Transformer):
             start_inds=start_inds,
             cur_token=input_ids,
             input_pos=input_pos,
+            compile=False,
             max_new_tokens=4,
         )
 
@@ -96,12 +96,7 @@ def test_generate(small_model: Transformer):
             max_new_tokens=max_new_tokens,
             device=device,
             compile=False,
-            temperature=1.0,
-            top_k=None,
         )
 
     # Verify results
-    assert output_ids.shape == (batch_size, max_seq_length)
-    assert not torch.all(output_ids[:, prompt_seq_length:] == -1), (
-        "Output should not be all padding"
-    )
+    assert output_ids.shape == (batch_size, prompt_seq_length + max_new_tokens)

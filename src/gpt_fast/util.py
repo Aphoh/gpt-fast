@@ -1,3 +1,4 @@
+import functools
 import itertools
 from typing import Any, Dict, Optional, Tuple, Union
 import torch
@@ -38,8 +39,46 @@ def _next_power_of_two(n: int) -> int:
     return 1 << (n - 1).bit_length()
 
 
+def maybe_compile(func=None, **compile_options):
+    """
+    Decorator that conditionally compiles a PyTorch function.
+
+    Args:
+        func: The function to be decorated.
+        **compile_options: Options to pass to torch.compile when compiling.
+
+    Returns:
+        Decorated function that is optionally compiled.
+
+    Usage:
+        @maybe_compile
+        def func(x): ...
+
+        @maybe_compile(fullgraph=True, mode='reduce-overhead')
+        def func(x): ...
+    """
+
+    def decorator(f):
+        @functools.wraps(f)
+        def wrapper(*args, compile=True, **kwargs):
+            if compile:
+                # Create a compiled version of the function with specified options
+                compiled_func = torch.compile(f, **compile_options)
+                return compiled_func(*args, **kwargs)
+            else:
+                # Run the original function
+                return f(*args, **kwargs)
+
+        return wrapper
+
+    # Handle both @maybe_compile and @maybe_compile(fullgraph=True) cases
+    if func is not None:
+        return decorator(func)
+    return decorator
+
+
 # compilation args taken from https://github.com/pytorch/pytorch/issues/142817
-@torch.compile(fullgraph=True, dynamic=False, mode="max-autotune-no-cudagraphs")
+# @maybe_compile(fullgraph=True, dynamic=False, mode="max-autotune-no-cudagraphs")
 def flex_attention_maybe_pad(
     query: torch.Tensor,  # (B, Hq, L, E)
     key: Tensor,  # (B, Hkv, S, E)

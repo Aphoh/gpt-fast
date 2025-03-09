@@ -139,6 +139,12 @@ transformer_configs = {
         intermediate_size=8192,
         vocab_size=128256,
         rope_base=500000,
+        rope_scaling=dict(
+            factor=32.0,
+            low_freq_factor=1.0,
+            high_freq_factor=4.0,
+            original_max_position_embeddings=8192,
+        ),
         tie_embedding_weights=True,
     ),
     "llama-3-8b": dict(

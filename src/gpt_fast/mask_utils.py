@@ -1,3 +1,4 @@
+from gpt_fast.util import maybe_compile
 import torch
 
 from torch.nn.attention.flex_attention import (
@@ -5,8 +6,6 @@ from torch.nn.attention.flex_attention import (
     BlockMask,
     _mask_mod_signature,
 )
-
-create_block_mask_complied = torch.compile(create_block_mask)
 
 
 def _causal_mask(b, h, q, kv):
@@ -20,6 +19,7 @@ def left_pad_mask_mod(start_inds, offset) -> _mask_mod_signature:
     return _skip_left_pad_mask
 
 
+@maybe_compile
 def make_base_mask(
     B: int,
     query_len: int,
@@ -27,7 +27,7 @@ def make_base_mask(
     device="cuda",
     **kwargs,
 ):
-    return create_block_mask_complied(
+    return create_block_mask(
         _causal_mask, B, 1, query_len, kv_len, device=device, **kwargs
     )
 
@@ -40,7 +40,7 @@ def make_prefill_mask(
     **kwargs,
 ):
     (B,) = start_inds.shape
-    return create_block_mask_complied(
+    return create_block_mask(
         left_pad_mask_mod(start_inds, [0]),
         B,
         1,

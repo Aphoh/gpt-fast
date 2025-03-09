@@ -4,10 +4,9 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 import json
-import re
 import shutil
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Optional
 from safetensors.torch import load_file as load_safetensors_file
 import torch
 from gpt_fast.model import ModelArgs

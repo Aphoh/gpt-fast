@@ -15,7 +15,7 @@ from torch.nn.attention.flex_attention import BlockMask
 from tqdm import tqdm
 
 from gpt_fast.inputs import Batch, read_ids, read_input_batches, write_outputs
-from gpt_fast.util import input_pos_from_start_inds, load_model
+from gpt_fast.util import input_pos_from_start_inds, load_model, maybe_compile
 from gpt_fast.model import Transformer
 from gpt_fast.tokenizer import detokenize_output_ids, get_tokenizer, tokenize_and_pad
 from gpt_fast.mask_utils import (
@@ -66,7 +66,7 @@ def sample(logits, config: SamplingConfig):
     return idx_next, probs
 
 
-@torch.compile(fullgraph=True, dynamic=False)
+@maybe_compile(fullgraph=True, dynamic=False)
 def prefill(
     model: Transformer,
     x: torch.Tensor,
@@ -74,6 +74,7 @@ def prefill(
     start_inds: torch.Tensor,
     max_seq_length: int,
     sampling: SamplingConfig = SamplingConfig(),
+    return_logits=False,
 ) -> torch.Tensor:
     # x: [B, S]
     # input_pos: [B, S]
@@ -85,10 +86,12 @@ def prefill(
     )
     offset = torch.tensor([0], device=x.device)
     logits = model(prefill_mask, x, input_pos, start_inds, offset=offset)
+    if return_logits:
+        return logits
     return sample(logits, sampling)[0]
 
 
-@torch.compile(mode="reduce-overhead", fullgraph=True, dynamic=False)
+@maybe_compile(mode="reduce-overhead", fullgraph=True, dynamic=False)
 def decode_one_token(
     gen_mask_i: BlockMask,
     model: Transformer,
@@ -118,6 +121,7 @@ def decode_n_tokens(
     input_pos: torch.Tensor,
     max_new_tokens: int,
     sampling: SamplingConfig = SamplingConfig(),
+    compile: bool = False,
 ) -> torch.IntTensor:
     """
     cur_token: [B] current token
@@ -137,6 +141,7 @@ def decode_n_tokens(
             input_pos,
             offset=offset,
             sampling=sampling,
+            compile=compile,
         )
         input_pos += 1
         query_pos += 1
@@ -155,6 +160,7 @@ def generate(
     max_new_tokens: int,
     *,
     device: torch.device,
+    compile: bool,
     sampling: SamplingConfig = SamplingConfig(),
 ) -> torch.Tensor:
     """
@@ -184,13 +190,16 @@ def generate(
         start_inds=start_inds,
         max_seq_length=max_seq_length,
         sampling=sampling,
+        compile=compile,
     ).clone()
     output_ids[:, S] = next_token.squeeze(1)
 
     input_pos = prefill_input_pos[:, -1] + 1
 
     # TODO: stopping criteria
-    base_mask = make_base_mask(B, max_seq_length, max_seq_length, device=device)
+    base_mask = make_base_mask(
+        B, max_seq_length, max_seq_length, device=device, compile=compile
+    )
     generated_tokens = decode_n_tokens(
         base_mask=base_mask,
         query_pos=S + 1,
@@ -199,6 +208,7 @@ def generate(
         start_inds=start_inds,
         input_pos=input_pos,
         max_new_tokens=max_new_tokens - 1,
+        compile=compile,
         sampling=sampling,
     )
     output_ids[:, S + 1 : S + 1 + generated_tokens.shape[-1]] = generated_tokens
@@ -230,6 +240,7 @@ def main(
     batch_size: int,
     sampling: SamplingConfig,
     checkpoint_path: Path,
+    compile: bool,
     device: torch.device,
 ) -> None:
     """Generates text samples based on a pre-trained Transformer model and tokenizer."""
@@ -293,6 +304,7 @@ def main(
                 max_seq_length=max_seq_length,
                 max_new_tokens=max_new_tokens,
                 device=device,
+                compile=compile,
                 sampling=sampling,
             )
             # TODO: postprocess?
@@ -323,7 +335,7 @@ if __name__ == "__main__":
         "-o",
         "--output_file",
         type=Path,
-        default=Path("sample_output.jsonl"),
+        default=Path(f"sample_output_{int(time.time())}.jsonl"),
         help="Output jsonl path",
     )
     parser.add_argument(
@@ -369,6 +381,7 @@ if __name__ == "__main__":
     temperature: float = args.temperature
     checkpoint_path: Path = args.checkpoint_path
     device: torch.device = torch.device(args.device)
+    compile: bool = args.compile
     sampling = SamplingConfig(top_k=top_k, temperature=temperature)
 
     args = parser.parse_args()
@@ -379,6 +392,7 @@ if __name__ == "__main__":
         max_seq_length=max_seq_length,
         batch_size=batch_size,
         sampling=sampling,
+        compile=compile,
         checkpoint_path=checkpoint_path,
         device=device,
     )
