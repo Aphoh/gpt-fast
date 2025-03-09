@@ -114,7 +114,11 @@ def tokenize_and_pad(
     return PaddedOutput(start_inds=torch.tensor(start_inds), padded=padded)
 
 
-def detokenize_output_ids(start_inds: torch.IntTensor, output_ids: torch.IntTensor, tokenizer: TokenizerInterface):
+def detokenize_output_ids(
+    start_inds: torch.IntTensor,
+    output_ids: torch.IntTensor,
+    tokenizer: TokenizerInterface,
+):
     """
     Detokenizes a list of output ids.
 

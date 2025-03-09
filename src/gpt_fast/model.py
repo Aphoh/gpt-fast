@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 from torch.nn import functional as F
-from torch.nn.attention.flex_attention import _mask_mod_signature, BlockMask
+from torch.nn.attention.flex_attention import BlockMask
 from gpt_fast.util import flex_attention_maybe_pad
 from gpt_fast.mask_utils import left_pad_mask_mod
 
@@ -21,6 +21,7 @@ def find_multiple(n: int, k: int) -> int:
     if n % k == 0:
         return n
     return n + k - (n % k)
+
 
 @dataclass
 class ModelArgs:
@@ -294,7 +295,12 @@ class Transformer(nn.Module):
         )
 
     def forward(
-        self, mask: BlockMask, idx: Tensor, input_pos: Tensor, start_inds: Tensor, offset: torch.Tensor,
+        self,
+        mask: BlockMask,
+        idx: Tensor,
+        input_pos: Tensor,
+        start_inds: Tensor,
+        offset: torch.Tensor,
     ) -> Tensor:
         assert self.freqs_cis is not None, "Caches must be initialized first"
         mask.mask_mod = self.left_pad_mask_mod(start_inds, offset)

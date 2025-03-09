@@ -7,7 +7,7 @@ from gpt_fast.util import input_pos_from_start_inds
 
 
 @pytest.fixture
-def test_model():
+def small_model():
     return Transformer(
         ModelArgs(
             block_size=256,
@@ -22,7 +22,7 @@ def test_model():
     )
 
 
-def test_prefill(test_model: Transformer):
+def test_prefill(small_model: Transformer):
     # Input setup
     batch_size = 4
     prompt_seq_length = 12
@@ -31,20 +31,20 @@ def test_prefill(test_model: Transformer):
     input_pos = input_pos_from_start_inds(start_inds, prompt_seq_length)
     max_seq_length = 128
 
-    test_model.setup_caches(batch_size, max_seq_length)
+    small_model.setup_caches(batch_size, max_seq_length)
 
     # Call generate function
     with torch.no_grad():
         _ = prefill(
-            model=test_model,
+            model=small_model,
             x=input_ids,
             input_pos=input_pos,
             start_inds=start_inds,
-            max_seq_length=max_seq_length
+            max_seq_length=max_seq_length,
         )
 
 
-def test_decode_n(test_model: Transformer):
+def test_decode_n(small_model: Transformer):
     # Input setup
     batch_size = 4
     prompt_seq_length = 12
@@ -53,20 +53,20 @@ def test_decode_n(test_model: Transformer):
     start_inds = torch.arange(batch_size, dtype=torch.int)
     input_pos = input_pos_from_start_inds(start_inds, prompt_seq_length)[:, -1]
 
-    test_model.setup_caches(batch_size, max_seq_length)
+    small_model.setup_caches(batch_size, max_seq_length)
 
     base_mask = make_base_mask(
         batch_size, max_seq_length, max_seq_length, device=start_inds.device
     )
 
-    test_model.forward = torch.compile(test_model.forward)
+    small_model.forward = torch.compile(small_model.forward)
 
     # Call generate function
     with torch.no_grad():
         decode_n_tokens(
             base_mask=base_mask,
             query_pos=prompt_seq_length,
-            model=test_model,
+            model=small_model,
             start_inds=start_inds,
             cur_token=input_ids,
             input_pos=input_pos,
@@ -74,7 +74,7 @@ def test_decode_n(test_model: Transformer):
         )
 
 
-def test_generate(test_model: Transformer):
+def test_generate(small_model: Transformer):
     # Input setup
     device = torch.device("cpu")
     batch_size = 4
@@ -84,12 +84,12 @@ def test_generate(test_model: Transformer):
     max_seq_length = 128
     max_new_tokens = 16
 
-    test_model.setup_caches(batch_size, max_seq_length)
+    small_model.setup_caches(batch_size, max_seq_length)
 
     # Call generate function
     with torch.no_grad():
         output_ids = generate(
-            model=test_model,
+            model=small_model,
             input_ids=input_ids,
             start_inds=start_inds,
             max_seq_length=max_seq_length,

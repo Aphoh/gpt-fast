@@ -3,6 +3,7 @@
 
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
+from dataclasses import dataclass
 import time
 from pathlib import Path
 from typing import Optional
@@ -10,7 +11,7 @@ from typing import Optional
 import torch
 import torch._dynamo.config
 import torch._inductor.config
-from torch.nn.attention.flex_attention import BlockMask, _mask_mod_signature
+from torch.nn.attention.flex_attention import BlockMask
 from tqdm import tqdm
 
 from gpt_fast.inputs import Batch, read_ids, read_input_batches, write_outputs
@@ -35,6 +36,12 @@ def device_sync(device: torch.device) -> None:
 default_device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
 
+@dataclass(frozen=True)
+class SamplingConfig:
+    top_k: Optional[int] = None
+    temperature: float = 1.0
+
+
 def multinomial_sample_one_no_sync(
     probs_sort,
 ):  # Does multinomial sampling without a cuda synchronization
@@ -53,8 +60,8 @@ def logits_to_probs(logits, temperature: float = 1.0, top_k: Optional[int] = Non
     return probs
 
 
-def sample(logits, temperature: float = 1.0, top_k: Optional[int] = None):
-    probs = logits_to_probs(logits[:, -1], temperature, top_k)
+def sample(logits, config: SamplingConfig):
+    probs = logits_to_probs(logits[:, -1], config.temperature, config.top_k)
     idx_next = multinomial_sample_one_no_sync(probs)
     return idx_next, probs
 
@@ -66,7 +73,7 @@ def prefill(
     input_pos: torch.Tensor,
     start_inds: torch.Tensor,
     max_seq_length: int,
-    **sampling_kwargs,
+    sampling: SamplingConfig = SamplingConfig(),
 ) -> torch.Tensor:
     # x: [B, S]
     # input_pos: [B, S]
@@ -78,7 +85,7 @@ def prefill(
     )
     offset = torch.tensor([0], device=x.device)
     logits = model(prefill_mask, x, input_pos, start_inds, offset=offset)
-    return sample(logits, **sampling_kwargs)[0]
+    return sample(logits, sampling)[0]
 
 
 @torch.compile(mode="reduce-overhead", fullgraph=True, dynamic=False)
@@ -89,7 +96,7 @@ def decode_one_token(
     start_inds: torch.Tensor,
     input_pos: torch.Tensor,
     offset: torch.Tensor,
-    **sampling_kwargs,
+    sampling: SamplingConfig = SamplingConfig(),
 ) -> torch.IntTensor:
     logits = model(
         gen_mask_i,
@@ -98,7 +105,7 @@ def decode_one_token(
         start_inds=start_inds,
         offset=offset,
     )
-    next_token, _ = sample(logits, **sampling_kwargs)
+    next_token, _ = sample(logits, sampling)
     return next_token
 
 
@@ -110,7 +117,7 @@ def decode_n_tokens(
     start_inds: torch.Tensor,
     input_pos: torch.Tensor,
     max_new_tokens: int,
-    **sampling_kwargs,
+    sampling: SamplingConfig = SamplingConfig(),
 ) -> torch.IntTensor:
     """
     cur_token: [B] current token
@@ -123,7 +130,13 @@ def decode_n_tokens(
         gen_mask_i = get_gen_submask(base_mask, query_pos)
         offset = torch.tensor([query_pos], device=cur_token.device)
         next_token = decode_one_token(
-            gen_mask_i, model, cur_token, start_inds, input_pos, offset=offset, **sampling_kwargs
+            gen_mask_i,
+            model,
+            cur_token,
+            start_inds,
+            input_pos,
+            offset=offset,
+            sampling=sampling,
         )
         input_pos += 1
         query_pos += 1
@@ -142,7 +155,7 @@ def generate(
     max_new_tokens: int,
     *,
     device: torch.device,
-    **sampling_kwargs,
+    sampling: SamplingConfig = SamplingConfig(),
 ) -> torch.Tensor:
     """
     input_ids: [B, S] left padded batch of input ids
@@ -170,16 +183,14 @@ def generate(
         input_pos=prefill_input_pos,
         start_inds=start_inds,
         max_seq_length=max_seq_length,
-        **sampling_kwargs,
+        sampling=sampling,
     ).clone()
     output_ids[:, S] = next_token.squeeze(1)
 
     input_pos = prefill_input_pos[:, -1] + 1
 
     # TODO: stopping criteria
-    base_mask = make_base_mask(
-        B, max_seq_length, max_seq_length, device=device
-    )
+    base_mask = make_base_mask(B, max_seq_length, max_seq_length, device=device)
     generated_tokens = decode_n_tokens(
         base_mask=base_mask,
         query_pos=S + 1,
@@ -188,7 +199,7 @@ def generate(
         start_inds=start_inds,
         input_pos=input_pos,
         max_new_tokens=max_new_tokens - 1,
-        **sampling_kwargs,
+        sampling=sampling,
     )
     output_ids[:, S + 1 : S + 1 + generated_tokens.shape[-1]] = generated_tokens
 
@@ -217,10 +228,8 @@ def main(
     max_new_tokens: int,
     max_seq_length: Optional[int],
     batch_size: int,
-    top_k: int,
-    temperature: float,
+    sampling: SamplingConfig,
     checkpoint_path: Path,
-    compile: bool,
     device: torch.device,
 ) -> None:
     """Generates text samples based on a pre-trained Transformer model and tokenizer."""
@@ -272,7 +281,7 @@ def main(
     with open(output_file, "a") as f:
         for batch in tqdm(input_iterator, desc="Generating"):
             batch: Batch
-            n_trim = (batch_size - len(batch.texts))
+            n_trim = batch_size - len(batch.texts)
             if n_trim != 0:
                 batch.texts.extend(["pad"] * (n_trim))
             device_sync(device=device)
@@ -284,16 +293,16 @@ def main(
                 max_seq_length=max_seq_length,
                 max_new_tokens=max_new_tokens,
                 device=device,
-                # sampling kwargs
-                temperature=temperature,
-                top_k=top_k,
+                sampling=sampling,
             )
             # TODO: postprocess?
 
             if n_trim != 0:
                 encoded.start_inds[:-n_trim]
                 output = output[:-n_trim]
-            completions = detokenize_output_ids(encoded.start_inds, output.cpu(), tokenizer)
+            completions = detokenize_output_ids(
+                encoded.start_inds, output.cpu(), tokenizer
+            )
             write_outputs(f, batch, completions)
             # TODO do I need a model.reset_caches()
 
@@ -359,8 +368,8 @@ if __name__ == "__main__":
     top_k: int = args.top_k
     temperature: float = args.temperature
     checkpoint_path: Path = args.checkpoint_path
-    compile: bool = args.compile
     device: torch.device = torch.device(args.device)
+    sampling = SamplingConfig(top_k=top_k, temperature=temperature)
 
     args = parser.parse_args()
     main(
@@ -369,9 +378,7 @@ if __name__ == "__main__":
         max_new_tokens=max_new_tokens,
         max_seq_length=max_seq_length,
         batch_size=batch_size,
-        top_k=top_k,
-        temperature=temperature,
+        sampling=sampling,
         checkpoint_path=checkpoint_path,
-        compile=compile,
         device=device,
     )

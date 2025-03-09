@@ -12,6 +12,7 @@ from safetensors.torch import load_file as load_safetensors_file
 import torch
 from gpt_fast.model import ModelArgs
 
+
 def permute(w, n_head, head_dim, dim):
     return (
         w.view(n_head, 2, head_dim // 2, dim)
@@ -19,12 +20,9 @@ def permute(w, n_head, head_dim, dim):
         .reshape(head_dim * n_head, dim)
     )
 
+
 def permute_bias(b, n_head, head_dim):
-    return (
-        b.view(n_head, 2, head_dim // 2)
-        .transpose(1, 2)
-        .reshape(head_dim * n_head)
-    )
+    return b.view(n_head, 2, head_dim // 2).transpose(1, 2).reshape(head_dim * n_head)
 
 
 def convert_state_dict(config: ModelArgs, state_dict: Dict[str, torch.Tensor]):
@@ -86,7 +84,6 @@ def convert_state_dict(config: ModelArgs, state_dict: Dict[str, torch.Tensor]):
 
     for key in final_result.keys():
         print(f"{key}: {final_result[key].shape}")
-
 
 
 @torch.inference_mode()

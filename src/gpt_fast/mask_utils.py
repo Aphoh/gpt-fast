@@ -8,8 +8,10 @@ from torch.nn.attention.flex_attention import (
 
 create_block_mask_complied = torch.compile(create_block_mask)
 
+
 def _causal_mask(b, h, q, kv):
     return q >= kv
+
 
 def left_pad_mask_mod(start_inds, offset) -> _mask_mod_signature:
     def _skip_left_pad_mask(b, h, q, kv):
@@ -17,15 +19,37 @@ def left_pad_mask_mod(start_inds, offset) -> _mask_mod_signature:
 
     return _skip_left_pad_mask
 
+
 def make_base_mask(
     B: int,
     query_len: int,
     kv_len: int,
     device="cuda",
+    **kwargs,
 ):
     return create_block_mask_complied(
-        _causal_mask, B, 1, query_len, kv_len, device=device
+        _causal_mask, B, 1, query_len, kv_len, device=device, **kwargs
     )
+
+
+def make_prefill_mask(
+    start_inds: torch.Tensor,
+    query_len: int,
+    kv_len: int,
+    device="cuda",
+    **kwargs,
+):
+    (B,) = start_inds.shape
+    return create_block_mask_complied(
+        left_pad_mask_mod(start_inds, [0]),
+        B,
+        1,
+        query_len,
+        kv_len,
+        device=device,
+        **kwargs,
+    )
+
 
 def get_gen_submask(
     mask: BlockMask,
@@ -33,7 +57,7 @@ def get_gen_submask(
 ) -> BlockMask:
     q_block_size = mask.BLOCK_SIZE[0]
     block_idx = query_idx // q_block_size
-    #gen_mask = mask[:, :, block_idx:block_idx+1]
+    # gen_mask = mask[:, :, block_idx:block_idx+1]
     gen_mask = mask[:, :, block_idx]
     gen_mask.seq_lengths = (1, mask.seq_lengths[1])
     gen_mask.mask_mod = mask.mask_mod
