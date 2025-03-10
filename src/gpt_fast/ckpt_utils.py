@@ -73,6 +73,4 @@ def convert_state_dict(config: ModelArgs, state_dict: Dict[str, torch.Tensor]):
             del final_result[key.replace("wq", "wk")]
             del final_result[key.replace("wq", "wv")]
 
-    for key in final_result.keys():
-        print(f"{key}: {final_result[key].shape}")
     return final_result

@@ -227,24 +227,17 @@ class KVCache(nn.Module):
         self.register_buffer("k_cache", torch.zeros(cache_shape, dtype=dtype))
         self.register_buffer("v_cache", torch.zeros(cache_shape, dtype=dtype))
 
-    def update(self, input_pos, k_val, v_val):
+    def update(self, offset, k_val, v_val):
         # input_pos: [B, S], k_val, v_val: [B, H, S, D]
         B, H, S, D = k_val.shape
-        assert input_pos.shape[0] == B
-        assert input_pos.shape[1] == S
 
         # Clone the caches
         k_out = self.k_cache
         v_out = self.v_cache
 
-        # Find valid indices (not -1)
-
-        # Handle each batch separately
-        # TODO: does this compile ok?
-        for b in range(B):
-            # Get valid indices
-            k_out[b, :, input_pos[b]] = k_val[b, :]
-            v_out[b, :, input_pos[b]] = v_val[b, :]
+        insert_ids = offset + torch.arange(S, device=k_val.device)
+        k_out[:, :, insert_ids] = k_val
+        v_out[:, :, insert_ids] = v_val
         return k_out, v_out
 
 
@@ -314,7 +307,7 @@ class Transformer(nn.Module):
         x = self.tok_embeddings(idx)
 
         for i, layer in enumerate(self.layers):
-            x = layer(x, input_pos, freqs_cis, mask)
+            x = layer(x, freqs_cis, mask, offset)
         x = self.norm(x)
         logits = self.output(x)
         return logits
@@ -333,9 +326,13 @@ class TransformerBlock(nn.Module):
         self.attention_norm = config.make_norm()
 
     def forward(
-        self, x: Tensor, input_pos: Tensor, freqs_cis: Tensor, mask: BlockMask
+        self,
+        x: Tensor,
+        freqs_cis: Tensor,
+        mask: BlockMask,
+        offset: Tensor,
     ) -> Tensor:
-        h = x + self.attention(self.attention_norm(x), freqs_cis, mask, input_pos)
+        h = x + self.attention(self.attention_norm(x), freqs_cis, mask, offset)
         out = h + self.feed_forward(self.ffn_norm(h))
         return out
 
@@ -349,7 +346,7 @@ class Attention(nn.Module):
         # key, query, value projections for all heads, but in a batch
         self.wqkv = nn.Linear(config.dim, total_head_dim, bias=config.attn_bias)
         self.wo = nn.Linear(config.dim, config.dim, bias=config.attn_bias)
-        self.kv_cache = None
+        self.kv_cache: Optional[KVCache] = None
 
         self.n_head = config.n_head
         self.head_dim = config.head_dim
@@ -369,7 +366,7 @@ class Attention(nn.Module):
         x: Tensor,
         freqs_cis: Tensor,
         mask: BlockMask,
-        input_pos: Optional[Tensor] = None,
+        offset: torch.Tensor,
     ) -> Tensor:
         bsz, seqlen, _ = x.shape
 
@@ -386,7 +383,7 @@ class Attention(nn.Module):
         q, k, v = map(lambda x: x.transpose(1, 2), (q, k, v))
 
         if self.kv_cache is not None:
-            k, v = self.kv_cache.update(input_pos, k, v)
+            k, v = self.kv_cache.update(offset, k, v)
 
         y = flex_attention_maybe_pad(
             q, k, v, block_mask=mask, enable_gqa=(self.n_head != self.n_local_heads)

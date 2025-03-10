@@ -41,3 +41,17 @@ def test_left_pad_mask():
         gen_out = flex_attention(qkv, qkv, qkv, block_mask=gen_mask)
         prefill_out = flex_attention(qkv, qkv, qkv, block_mask=mask)
         assert torch.allclose(gen_out, prefill_out)
+
+
+def test_left_pad_works():
+    device = torch.device("cpu")
+    qkv = torch.randn(2, 1, 32, 4, device=device)
+    # same sequence, but batch 1 has a single left pad
+    qkv[1, :, 1:] = qkv[0, :, :-1]
+    qkv[1, :, 0] = 0
+    start_inds = torch.tensor([0, 1], device=device)
+
+    mask = make_prefill_mask(start_inds, 32, 32, device=device)
+    output = flex_attention(qkv, qkv, qkv, block_mask=mask)
+
+    assert torch.allclose(output[0, :, :-1], output[1, :, 1:])

@@ -21,6 +21,7 @@ from gpt_fast.tokenizer import detokenize_output_ids, get_tokenizer, tokenize_an
 from gpt_fast.mask_utils import (
     make_base_mask,
     get_gen_submask,
+    make_prefill_mask,
 )
 
 
@@ -78,11 +79,12 @@ def prefill(
 ) -> torch.Tensor:
     # x: [B, S]
     # input_pos: [B, S]
-    prefill_mask = make_base_mask(
-        x.shape[0],
+    prefill_mask = make_prefill_mask(
+        start_inds,
         x.shape[1],
         max_seq_length,
         device=x.device,
+        BLOCK_SIZE=(1, 1),
     )
     offset = torch.tensor([0], device=x.device)
     logits = model(prefill_mask, x, input_pos, start_inds, offset=offset)
