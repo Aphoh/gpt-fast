@@ -79,12 +79,11 @@ def prefill(
 ) -> torch.Tensor:
     # x: [B, S]
     # input_pos: [B, S]
-    prefill_mask = make_prefill_mask(
-        start_inds,
+    prefill_mask = make_base_mask(
+        start_inds.shape[0],
         x.shape[1],
         max_seq_length,
         device=x.device,
-        BLOCK_SIZE=(1, 1),
     )
     offset = torch.tensor([0], device=x.device)
     logits = model(prefill_mask, x, input_pos, start_inds, offset=offset)
@@ -102,6 +101,7 @@ def decode_one_token(
     input_pos: torch.Tensor,
     offset: torch.Tensor,
     sampling: SamplingConfig = SamplingConfig(),
+    return_logits=False
 ) -> torch.IntTensor:
     logits = model(
         gen_mask_i,
@@ -110,6 +110,8 @@ def decode_one_token(
         start_inds=start_inds,
         offset=offset,
     )
+    if return_logits:
+        return logits
     next_token, _ = sample(logits, sampling)
     return next_token
 
@@ -204,7 +206,7 @@ def generate(
     )
     generated_tokens = decode_n_tokens(
         base_mask=base_mask,
-        query_pos=S + 1,
+        query_pos=S,
         model=model,
         cur_token=output_ids[:, S],
         start_inds=start_inds,
