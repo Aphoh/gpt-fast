@@ -256,10 +256,16 @@ class Transformer(nn.Module):
             self.output.weight = self.tok_embeddings.weight
 
         self.freqs_cis: Optional[Tensor] = None
-        self.mask_cache: Optional[Tensor] = None
         self.max_batch_size = -1
         self.max_seq_length = -1
         self.left_pad_mask_mod = left_pad_mask_mod
+
+    def clear_caches(self):
+        self.freqs_cis = None
+        self.max_batch_size = -1
+        self.max_seq_length = -1
+        for b in self.layers:
+            b.attention.kv_cache = None
 
     def setup_caches(self, max_batch_size, max_seq_length):
         if (

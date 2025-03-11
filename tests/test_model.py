@@ -1,32 +1,42 @@
-from gpt_fast.generate import prefill
+from gpt_fast.generate import decode_one_token, prefill
+from gpt_fast.mask_utils import get_gen_submask, make_base_mask
 from gpt_fast.util import input_pos_from_start_inds
 import torch
 import pytest
-from transformers import LlamaForCausalLM, AutoConfig
+from transformers import LlamaForCausalLM, LlamaConfig, AutoConfig
 from gpt_fast.ckpt_utils import convert_state_dict
 from gpt_fast.model import Transformer, ModelArgs
 
 
 def test_small_model_consistent():
-    name = "Xenova/llama2.c-stories15M"
-    config = AutoConfig.from_pretrained(name)
-    config.hidden_size = 256
-    config.num_attention_heads = 8
-    config.num_key_value_heads = 8
-    config.head_dim = 256 // 8
-    model = LlamaForCausalLM(config)
+    torch.random.manual_seed(42)
+    config = LlamaConfig(
+        vocab_size=1000,
+        hidden_size=16,
+        intermediate_size=32,
+        num_hidden_layers=6,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        initializer_range=0.1,
+    )
+    model_args = ModelArgs(
+        vocab_size=1000,
+        dim=16,
+        intermediate_size=32,
+        n_head=4,
+        n_local_heads=2,
+        n_layer=6,
+        block_size=1024,
+    )
+
+    model = LlamaForCausalLM(config).to(torch.float16)
     state_dict = model.state_dict()
 
-    model_args = ModelArgs.from_name(name)
-    model_args.head_dim = config.head_dim
-    model_args.dim = config.hidden_size
-    model_args.n_head = config.num_attention_heads
-    model_args.n_local_heads = config.num_key_value_heads
     converted = convert_state_dict(model_args, state_dict)
-    tformer = Transformer(model_args)
+    tformer = Transformer(model_args).to(torch.float16)
     tformer.load_state_dict(converted)
 
-    prefill_consistency(model, tformer)
+    consistency(model, tformer)
 
 
 def test_llama_1b_consistent():
@@ -44,37 +54,127 @@ def test_llama_1b_consistent():
             tformer = Transformer(model_args)
             tformer.load_state_dict(converted)
 
-            prefill_consistency(model, tformer)
+            consistency(model, tformer)
 
 
-def prefill_consistency(ref_model, tformer):
-    S = 32
-    input_ids = torch.ones(S, dtype=int).unsqueeze(0)
-    attn_mask = torch.ones(S, dtype=int)
+def setup_test_inputs(gen_len=40, prefill_len=32, batch_size=4):
+    base_input_ids = torch.arange(gen_len, dtype=int).unsqueeze(0)
+    input_ids = torch.zeros(batch_size, gen_len, dtype=int)
+    input_ids[0] = base_input_ids[0]
+    for i in range(1, batch_size):
+        input_ids[i, i:] = input_ids[0, :-i]
+    prefill_input_ids = input_ids[:, :prefill_len]
 
-    ref_output = ref_model(input_ids=input_ids, attention_mask=attn_mask).logits
+    start_inds = torch.arange(batch_size)
+    input_pos = input_pos_from_start_inds(start_inds, gen_len)
+    prefill_input_pos = input_pos_from_start_inds(start_inds, prefill_len)
 
-    B = 4
-    tformer.setup_caches(4, S)
+    return (
+        base_input_ids,
+        input_ids,
+        prefill_input_ids,
+        start_inds,
+        input_pos,
+        prefill_input_pos,
+    )
 
-    input_ids = torch.ones(B, S, dtype=int)
-    for i in range(B):
-        input_ids[i, :i] = 0
-    start_inds = torch.arange(B)
-    input_pos = input_pos_from_start_inds(start_inds, S)
 
-    prefill_logits = prefill(
+def check_prefill_consistent(ref_model, tformer):
+    """Test that prefill outputs match between reference model and our Transformer"""
+    gen_len = 40
+    prefill_len = 32
+    batch_size = 4
+
+    base_input_ids, _, prefill_input_ids, start_inds, _, prefill_input_pos = (
+        setup_test_inputs(gen_len, prefill_len, batch_size)
+    )
+
+    ref_output = ref_model(input_ids=base_input_ids[:, :prefill_len]).logits
+    tformer.setup_caches(batch_size, gen_len)
+
+    our_output = prefill(
         tformer,
-        x=input_ids,
+        x=prefill_input_ids,
         start_inds=start_inds,
-        input_pos=input_pos,
-        max_seq_length=S,
+        input_pos=prefill_input_pos,
+        max_seq_length=gen_len,
         return_logits=True,
         compile=False,
     )
 
-    for i in range(B):
-        # In batch i, tokens i:S should be the same as 0:S-i in the reference
-        assert torch.allclose(
-            ref_output[0, 0 : S - i], prefill_logits[i, i:S], atol=1e-4
-        ), f"Failed for bactch index {i}"
+    for i in range(batch_size):
+        print(
+            (ref_output[0, : prefill_len - i] - our_output[i, i:prefill_len])
+            .abs()
+            .max(dim=-1)
+        )
+        for s in range(prefill_len - i):
+            assert torch.allclose(
+                ref_output[0, s], our_output[i, i + s], atol=1e-1, rtol=1e-2
+            ), f"Failed for batch index {i}, seq index {s}"
+
+
+def check_decode_consistent(tformer: Transformer):
+    """Test that single token decode matches prefill outputs"""
+    gen_len = 40
+    prefill_len = 32
+    batch_size = 4
+
+    _, input_ids, prefill_input_ids, start_inds, input_pos, prefill_input_pos = (
+        setup_test_inputs(gen_len, prefill_len, batch_size)
+    )
+
+    tformer.setup_caches(batch_size, gen_len)
+
+    prefill_output = prefill(
+        tformer,
+        x=input_ids,  # Use full sequence for prefill reference
+        start_inds=start_inds,
+        input_pos=input_pos,
+        max_seq_length=gen_len,
+        return_logits=True,
+        compile=False,
+    )
+
+    # Clear caches
+    tformer.clear_caches()
+    tformer.setup_caches(batch_size, gen_len)
+    # Prefill the sequence to populate kv caches
+    prefill(
+        tformer,
+        x=prefill_input_ids,  # Use full sequence for prefill reference
+        start_inds=start_inds,
+        input_pos=prefill_input_pos,
+        max_seq_length=gen_len,
+        compile=False,
+    )
+
+    # Now test individual token decoding against prefill outputs
+    device = input_ids.device
+    base_mask = make_base_mask(
+        batch_size, gen_len, gen_len, device=device, compile=False
+    )
+    for i in range(prefill_len, gen_len):
+        gen_mask_i = get_gen_submask(base_mask, i)
+        cur_token = input_ids[:, i]
+        input_pos_gen = input_pos[:, i]
+        next_token_logits = decode_one_token(
+            gen_mask_i,
+            tformer,
+            cur_token,
+            start_inds,
+            input_pos_gen,
+            offset=torch.tensor([i], device=device),
+            compile=False,
+            return_logits=True,
+        )
+        for b in range(batch_size):
+            assert torch.allclose(
+                prefill_output[b, i], next_token_logits[b], atol=1e-5, rtol=1e-5
+            ), f"Failed for batch index {b}, seq index {i}"
+
+
+@torch.no_grad()
+def consistency(ref_model, tformer):
+    check_prefill_consistent(ref_model, tformer)
+    check_decode_consistent(tformer)

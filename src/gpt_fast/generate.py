@@ -21,7 +21,6 @@ from gpt_fast.tokenizer import detokenize_output_ids, get_tokenizer, tokenize_an
 from gpt_fast.mask_utils import (
     make_base_mask,
     get_gen_submask,
-    make_prefill_mask,
 )
 
 
@@ -101,7 +100,7 @@ def decode_one_token(
     input_pos: torch.Tensor,
     offset: torch.Tensor,
     sampling: SamplingConfig = SamplingConfig(),
-    return_logits=False
+    return_logits=False,
 ) -> torch.IntTensor:
     logits = model(
         gen_mask_i,
@@ -208,7 +207,7 @@ def generate(
         base_mask=base_mask,
         query_pos=S,
         model=model,
-        cur_token=output_ids[:, S],
+        cur_token=next_token.squeeze(1),
         start_inds=start_inds,
         input_pos=input_pos,
         max_new_tokens=max_new_tokens - 1,

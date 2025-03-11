@@ -1,8 +1,4 @@
-from gpt_fast.mask_utils import (
-    left_pad_mask_mod,
-    make_base_mask,
-    make_prefill_mask,
-)
+from gpt_fast.mask_utils import left_pad_mask_mod, make_base_mask, get_gen_submask
 import torch
 from torch.nn.attention.flex_attention import flex_attention
 
@@ -10,37 +6,28 @@ from torch.nn.attention.flex_attention import flex_attention
 def test_left_pad_mask():
     device = torch.device("cpu")
     B = 4
-    BASE_S = 128
+    BASE_S = 16
     block_size = 4
     start_inds = torch.arange(B) * block_size
 
-    mask = make_prefill_mask(
-        start_inds, BASE_S, BASE_S, device=device, BLOCK_SIZE=(block_size, block_size)
-    )
+    all_base_mask = make_base_mask(B, BASE_S, BASE_S, device=device, compile=False)
+    all_base_mask.mask_mod = left_pad_mask_mod(start_inds, torch.tensor([0]))
 
-    print(mask.to_string())
-    for i in range(B):
-        assert (
-            mask.full_kv_num_blocks[i, 0, : i + 1] == 0
-        ).all()  # the +1 is just including the 0 index
-        assert (mask.full_q_num_blocks[i, 0, :i] == 0).all()
-
-    # base gen mask
-    gen_mask = make_base_mask(
-        B,
-        BASE_S,
-        BASE_S,
-        device=device,
-        BLOCK_SIZE=(block_size, block_size),
-    )
-    gen_mask.mask_mod = left_pad_mask_mod(start_inds, [0])
-    print(gen_mask.to_string())
+    gen_base = make_base_mask(B, BASE_S, BASE_S, device=device, compile=False)
 
     with torch.no_grad():
         qkv = torch.randn(B, 1, BASE_S, BASE_S, device=device)
-        gen_out = flex_attention(qkv, qkv, qkv, block_mask=gen_mask)
-        prefill_out = flex_attention(qkv, qkv, qkv, block_mask=mask)
-        assert torch.allclose(gen_out, prefill_out)
+        all_out = flex_attention(qkv, qkv, qkv, block_mask=all_base_mask)
+
+        for query_idx in range(BASE_S):
+            gen_submask = get_gen_submask(gen_base, query_idx)
+            gen_submask.mask_mod = left_pad_mask_mod(
+                start_inds, torch.tensor([query_idx])
+            )
+            gen_out = flex_attention(
+                qkv[:, :, query_idx : query_idx + 1], qkv, qkv, block_mask=gen_submask
+            )
+            assert torch.allclose(all_out[:, :, query_idx], gen_out[:, :, 0])
 
 
 def test_left_pad_works():
@@ -51,7 +38,8 @@ def test_left_pad_works():
     qkv[1, :, 0] = 0
     start_inds = torch.tensor([0, 1], device=device)
 
-    mask = make_prefill_mask(start_inds, 32, 32, device=device)
+    mask = make_base_mask(start_inds.shape[0], 32, 32, device=device, compile=False)
+    mask.mask_mod = left_pad_mask_mod(start_inds, [0])
     output = flex_attention(qkv, qkv, qkv, block_mask=mask)
 
     assert torch.allclose(output[0, :, :-1], output[1, :, 1:])

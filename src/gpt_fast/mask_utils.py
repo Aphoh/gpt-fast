@@ -1,5 +1,4 @@
 from gpt_fast.util import maybe_compile
-import torch
 
 from torch.nn.attention.flex_attention import (
     create_block_mask,
@@ -29,25 +28,6 @@ def make_base_mask(
 ):
     return create_block_mask(
         _causal_mask, B, 1, query_len, kv_len, device=device, **kwargs
-    )
-
-
-def make_prefill_mask(
-    start_inds: torch.Tensor,
-    query_len: int,
-    kv_len: int,
-    device="cuda",
-    **kwargs,
-):
-    (B,) = start_inds.shape
-    return create_block_mask(
-        left_pad_mask_mod(start_inds, [0]),
-        B,
-        1,
-        query_len,
-        kv_len,
-        device=device,
-        **kwargs,
     )
 
 
