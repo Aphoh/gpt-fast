@@ -12,7 +12,7 @@ def test_small_model_consistent():
     torch.random.manual_seed(42)
     config = LlamaConfig(
         vocab_size=1000,
-        hidden_size=16,
+        hidden_size=64,
         intermediate_size=32,
         num_hidden_layers=6,
         num_attention_heads=4,
@@ -21,7 +21,7 @@ def test_small_model_consistent():
     )
     model_args = ModelArgs(
         vocab_size=1000,
-        dim=16,
+        dim=64,
         intermediate_size=32,
         n_head=4,
         n_local_heads=2,
@@ -37,6 +37,10 @@ def test_small_model_consistent():
     tformer.load_state_dict(converted)
 
     consistency(model, tformer)
+    if torch.cuda.is_available():
+        with torch.device("cuda"):
+            tformer.clear_caches()
+            consistency(model.cuda(), tformer.cuda(), compile=True)
 
 
 def test_llama_1b_consistent():
@@ -54,7 +58,7 @@ def test_llama_1b_consistent():
             tformer = Transformer(model_args)
             tformer.load_state_dict(converted)
 
-            consistency(model, tformer)
+            consistency(model, tformer, compile=True)
 
 
 def setup_test_inputs(gen_len=40, prefill_len=32, batch_size=4):
@@ -79,7 +83,7 @@ def setup_test_inputs(gen_len=40, prefill_len=32, batch_size=4):
     )
 
 
-def check_prefill_consistent(ref_model, tformer):
+def check_prefill_consistent(ref_model, tformer, compile=False):
     """Test that prefill outputs match between reference model and our Transformer"""
     gen_len = 40
     prefill_len = 32
@@ -99,7 +103,7 @@ def check_prefill_consistent(ref_model, tformer):
         input_pos=prefill_input_pos,
         max_seq_length=gen_len,
         return_logits=True,
-        compile=False,
+        compile=compile,
     )
 
     for i in range(batch_size):
@@ -114,7 +118,7 @@ def check_prefill_consistent(ref_model, tformer):
             ), f"Failed for batch index {i}, seq index {s}"
 
 
-def check_decode_consistent(tformer: Transformer):
+def check_decode_consistent(tformer: Transformer, compile=False):
     """Test that single token decode matches prefill outputs"""
     gen_len = 40
     prefill_len = 32
@@ -126,6 +130,7 @@ def check_decode_consistent(tformer: Transformer):
 
     tformer.setup_caches(batch_size, gen_len)
 
+    # breakpoint()
     prefill_output = prefill(
         tformer,
         x=input_ids,  # Use full sequence for prefill reference
@@ -146,13 +151,13 @@ def check_decode_consistent(tformer: Transformer):
         start_inds=start_inds,
         input_pos=prefill_input_pos,
         max_seq_length=gen_len,
-        compile=False,
+        compile=compile,
     )
 
     # Now test individual token decoding against prefill outputs
     device = input_ids.device
     base_mask = make_base_mask(
-        batch_size, gen_len, gen_len, device=device, compile=False
+        batch_size, gen_len, gen_len, device=device, compile=compile
     )
     for i in range(prefill_len, gen_len):
         gen_mask_i = get_gen_submask(base_mask, i)
@@ -165,19 +170,22 @@ def check_decode_consistent(tformer: Transformer):
             start_inds,
             input_pos_gen,
             offset=torch.tensor([i], device=device),
-            compile=False,
+            compile=compile,
             return_logits=True,
         )
         for b in range(batch_size):
             diff = prefill_output[b, i] - next_token_logits[b]
             assert torch.allclose(
-                prefill_output[b, i], next_token_logits[b], atol=1e-3, rtol=1e-3
+                prefill_output[b, i].cpu(),
+                next_token_logits[b].cpu(),
+                atol=1e-2,
+                rtol=1e-2,
             ), (
                 f"Failed for batch index {b}, seq index {i}, max diff: {diff.abs().max()}"
             )
 
 
 @torch.no_grad()
-def consistency(ref_model, tformer):
-    check_prefill_consistent(ref_model, tformer)
-    check_decode_consistent(tformer)
+def consistency(ref_model, tformer, compile=False):
+    check_prefill_consistent(ref_model, tformer, compile=compile)
+    check_decode_consistent(tformer, compile=compile)

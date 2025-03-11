@@ -66,7 +66,7 @@ def sample(logits, config: SamplingConfig):
     return idx_next, probs
 
 
-@maybe_compile(fullgraph=False, dynamic=False)
+@maybe_compile(fullgraph=False, dynamic=False, backend="inductor", mode="default")
 def prefill(
     model: Transformer,
     x: torch.Tensor,
@@ -91,7 +91,7 @@ def prefill(
     return sample(logits, sampling)[0]
 
 
-@maybe_compile(mode="reduce-overhead", fullgraph=False, dynamic=False)
+@maybe_compile(fullgraph=False, dynamic=False, backend="inductor", mode="default")
 def decode_one_token(
     gen_mask_i: BlockMask,
     model: Transformer,
