@@ -79,6 +79,7 @@ def maybe_compile(func=None, **compile_options):
 
 # compilation args taken from https://github.com/pytorch/pytorch/issues/142817
 # @maybe_compile(fullgraph=True, dynamic=False, mode="max-autotune-no-cudagraphs")
+@torch.compiler.disable(recursive=False)
 def flex_attention_maybe_pad(
     query: torch.Tensor,  # (B, Hq, L, E)
     key: Tensor,  # (B, Hkv, S, E)
