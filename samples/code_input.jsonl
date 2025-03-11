@@ -1,0 +1,7 @@
+{"id": "005", "text": "<file_sep><fim_prefix>powers.py\nimport numpy as np\ndef power2(x):\n<fim_suffix>main()\n<fim_middle>"}
+{"id": "006", "text": "<file_sep><fim_prefix>powers.py\nimport numpy as np\ndef power3(x):\n<fim_suffix>main()\n<fim_middle>"}
+{"id": "007", "text": "<file_sep><fim_prefix>powers.py\nimport numpy as np\ndef power4(x):\n<fim_suffix>main()\n<fim_middle>"}
+{"id": "010", "text": "<file_sep><fim_prefix>powers.py\nimport numpy as np\ndef power5(x):\n<fim_suffix>main()\n<fim_middle>"}
+{"id": "011", "text": "<file_sep><fim_prefix>powers.py\nimport numpy as np\ndef power6(x):\n<fim_suffix>main()\n<fim_middle>"}
+{"id": "012", "text": "<file_sep><fim_prefix>powers.py\nimport numpy as np\ndef power7(x):\n<fim_suffix>main()\n<fim_middle>"}
+{"id": "013", "text": "<file_sep><fim_prefix>powers.py\nimport numpy as np\ndef power8(x):\n<fim_suffix>main()\n<fim_middle>"}

@@ -66,8 +66,8 @@ def convert_state_dict(config: ModelArgs, state_dict: Dict[str, torch.Tensor]):
                 q = permute(q, config.n_head, config.head_dim, config.dim)
                 k = permute(k, config.n_local_heads, config.head_dim, config.dim)
             elif "bias" in key:
-                q = permute_bias(q, config.n_head)
-                k = permute_bias(k, config.n_local_heads)
+                q = permute_bias(q, config.n_head, config.head_dim)
+                k = permute_bias(k, config.n_local_heads, config.head_dim)
             final_result[key.replace("wq", "wqkv")] = torch.cat([q, k, v])
             del final_result[key]
             del final_result[key.replace("wq", "wk")]
