@@ -2,6 +2,8 @@ from gpt_fast.mask_utils import left_pad_mask_mod, make_base_mask, get_gen_subma
 import torch
 from torch.nn.attention.flex_attention import flex_attention
 
+from gpt_fast.util import flex_attention_maybe_pad
+
 
 def test_left_pad_mask():
     device = torch.device("cpu")
@@ -41,5 +43,11 @@ def test_left_pad_works():
     mask = make_base_mask(start_inds.shape[0], 32, 32, device=device, compile=False)
     mask.mask_mod = left_pad_mask_mod(start_inds, [0])
     output = flex_attention(qkv, qkv, qkv, block_mask=mask)
+
+    assert torch.allclose(output[0, :, :-1], output[1, :, 1:])
+
+    output = flex_attention_maybe_pad(
+        qkv.clone(), qkv.clone(), qkv.clone(), block_mask=mask
+    )
 
     assert torch.allclose(output[0, :, :-1], output[1, :, 1:])

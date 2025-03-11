@@ -310,7 +310,6 @@ def main(
                 compile=compile,
                 sampling=sampling,
             )
-            # TODO: postprocess?
 
             if n_trim != 0:
                 encoded.start_inds[:-n_trim]

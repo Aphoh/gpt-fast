@@ -47,6 +47,20 @@ def small_model(reference_model):
     return tformer
 
 
+@pytest.mark.slow
+def test_llama_decode():
+    with torch.device("cuda"):
+        name = "unsloth/Llama-3.2-1B-Instruct"
+        reference_model = LlamaForCausalLM.from_pretrained(name)
+        ref_state_dict = reference_model.state_dict()
+        config = ModelArgs.from_name(name)
+        state_dict = convert_state_dict(config, ref_state_dict)
+        our_model = Transformer(config)
+        our_model.load_state_dict(state_dict)
+        test_decode_consistency(our_model, reference_model)
+
+
+@torch.inference_mode()
 def test_decode_consistency(
     small_model: Transformer, reference_model: LlamaForCausalLM
 ):
@@ -54,11 +68,11 @@ def test_decode_consistency(
     batch_size = 4
     prompt_seq_length = 16
     max_seq_length = 32
-    ref_input_ids = torch.tensor([[1]])
+    ref_input_ids = torch.randint(0, small_model.config.vocab_size, (1, 5))
     generation_config = GenerationConfig(
         num_beams=1,
         do_sample=False,
-        max_new_tokens=max_seq_length - 1,
+        max_new_tokens=max_seq_length - ref_input_ids.shape[1],
     )
     attention_mask = torch.ones_like(ref_input_ids, dtype=torch.int)
     ref_output = reference_model.generate(
@@ -81,7 +95,7 @@ def test_decode_consistency(
         start_inds=start_inds,
         max_seq_length=max_seq_length,
         max_new_tokens=max_seq_length - prompt_seq_length,
-        device=torch.device("cpu"),
+        device=input_ids.device,
         compile=False,
         sampling=SamplingConfig(top_k=None, temperature=0.0),
     )
