@@ -80,7 +80,7 @@ def tokenize_and_pad(
     texts: List[str],
     tokenizer: TokenizerInterface,
     max_length: int,
-    pad_to_multiple: int = 256,
+    pad_to_multiple: int = 64,
 ) -> PaddedOutput:
     """
     Tokenizes a list of texts and pads them to the same length.
