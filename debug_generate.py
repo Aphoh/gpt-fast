@@ -31,6 +31,7 @@ def test_both_modes(input_text, checkpoint_path):
         compile=False,
         sampling=sampling
     )
+    print(encoded.start_inds, output)
     nocompile_out = detokenize_output_ids(encoded.start_inds, output, tokenizer)
     
     # Test with compile=True
@@ -45,6 +46,7 @@ def test_both_modes(input_text, checkpoint_path):
         compile=True,
         sampling=sampling
     )
+    print(encoded.start_inds, output)
     compile_out = detokenize_output_ids(encoded.start_inds, output, tokenizer)
 
     encoded = tokenize_and_pad([input_text], tokenizer, max_seq_length, pad_to_multiple=64)
@@ -60,6 +62,7 @@ def test_both_modes(input_text, checkpoint_path):
         compile=True,
         sampling=sampling
     )
+    print(output)
     compile_padding_out = detokenize_output_ids(encoded.start_inds, output, tokenizer)
 
 
