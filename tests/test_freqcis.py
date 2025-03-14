@@ -8,7 +8,7 @@ def test_apply_rotary_emb():
     seq_len = 128
     head_dim = 4
     num_heads = 2
-    dtype = torch.float16
+    dtype = torch.bfloat16
     B = 4
 
     start_inds = torch.arange(B)

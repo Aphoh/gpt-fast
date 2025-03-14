@@ -60,6 +60,7 @@ def logits_to_probs(logits, temperature: float = 1.0, top_k: Optional[int] = Non
     return probs
 
 
+@torch.compiler.disable
 def sample(logits, config: SamplingConfig):
     probs = logits_to_probs(logits[:, -1], config.temperature, config.top_k)
     idx_next = multinomial_sample_one_no_sync(probs)
@@ -231,7 +232,7 @@ def _load_model(checkpoint_path, device, precision, use_tp):
         print("Applying tensor parallel to model ...")
         apply_tp(model)
 
-    model = model.to(device=device, dtype=precision)
+    # model = model.to(dtype=precision).to(device=device)
     return model.eval()
 
 
@@ -250,6 +251,7 @@ def main(
     ### Preamble
     assert checkpoint_path.is_file(), checkpoint_path
     assert input_file.is_file(), output_file
+    torch.set_float32_matmul_precision("high")
 
     global print
     from gpt_fast.tp import maybe_init_dist

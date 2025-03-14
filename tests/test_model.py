@@ -29,11 +29,11 @@ def test_small_model_consistent():
         block_size=1024,
     )
 
-    model = LlamaForCausalLM(config).to(torch.float16)
+    model = LlamaForCausalLM(config).to(torch.bfloat16)
     state_dict = model.state_dict()
 
     converted = convert_state_dict(model_args, state_dict)
-    tformer = Transformer(model_args).to(torch.float16)
+    tformer = Transformer(model_args).to(torch.bfloat16)
     tformer.load_state_dict(converted)
 
     consistency(model, tformer)
