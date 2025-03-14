@@ -65,12 +65,28 @@ def test_both_modes(input_text, checkpoint_path):
     print(output)
     compile_padding_out = detokenize_output_ids(encoded.start_inds, output, tokenizer)
 
+    encoded = tokenize_and_pad([input_text], tokenizer, max_seq_length, pad_to_multiple=1)
+    # Test with compile=True, less padding
+    print("TESTING WITH COMPILE, PADDING TO 1")
+    output = generate(
+        model=model, 
+        input_ids=encoded.padded,
+        start_inds=encoded.start_inds,
+        max_seq_length=max_seq_length,
+        max_new_tokens=30,
+        device="cuda",
+        compile=True,
+        sampling=sampling
+    )
+    print(output)
+    compile_padding_1_out = detokenize_output_ids(encoded.start_inds, output, tokenizer)
 
     
     # Compare outputs
     print("NO COMPILE OUTPUT:\n", nocompile_out[0])
     print("WITH COMPILE OUTPUT:\n", compile_out[0])
-    print("WITH COMPILE SMALLER PADDING OUTPUT:\n", compile_padding_out[0])
+    print("WITH COMPILE 64 PADDING OUTPUT:\n", compile_padding_out[0])
+    print("WITH COMPILE 1 PADDING OUTPUT:\n", compile_padding_1_out[0])
 
 if __name__ == "__main__":
     test_both_modes("Hello, my name is", Path("checkpoints/unsloth/Llama-3.2-1B-Instruct/model.pth"))
