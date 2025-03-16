@@ -53,8 +53,8 @@ def get_small_model(reference_model):
 @skip_if_no_cuda
 def test_small_model_decode(compile, left_pad):
     with torch.device("cuda"):
-        reference_model = get_reference_model().to(device="cuda", dtype=torch.bfloat16)
-        small_model = get_small_model(reference_model).to(device="cuda", dtype=torch.bfloat16)
+        reference_model = get_reference_model().to(device="cuda", dtype=torch.float32)
+        small_model = get_small_model(reference_model).to(device="cuda", dtype=torch.float32)
         do_test_decode_consistency(small_model, reference_model, left_pad=left_pad, compile=compile)
 
 
