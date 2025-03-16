@@ -6,7 +6,7 @@ from pathlib import Path
 
 from gpt_fast.util import load_model
 
-def test_both_modes(input_text, checkpoint_path):
+def test_both_modes(input_texts, checkpoint_path):
     # Load model and tokenizer
     model = Transformer.from_name(checkpoint_path.parent.name)
     model = load_model(model, checkpoint_path, precision=torch.bfloat16, device="cuda")
@@ -15,8 +15,8 @@ def test_both_modes(input_text, checkpoint_path):
     # Setup
     max_seq_length = 512
     with torch.device("cuda"):
-        model.setup_caches(max_batch_size=1, max_seq_length=max_seq_length)
-    encoded = tokenize_and_pad([input_text], tokenizer, max_seq_length, pad_to_multiple=128)
+        model.setup_caches(max_batch_size=len(input_texts), max_seq_length=max_seq_length)
+    encoded = tokenize_and_pad(input_texts, tokenizer, max_seq_length, pad_to_multiple=128)
     sampling = SamplingConfig(top_k=None, temperature=0.0)
     
     # Test with compile=False
@@ -31,7 +31,6 @@ def test_both_modes(input_text, checkpoint_path):
         compile=False,
         sampling=sampling
     )
-    print(encoded.start_inds, output)
     nocompile_out = detokenize_output_ids(encoded.start_inds, output, tokenizer)
     
     # Test with compile=True
@@ -46,10 +45,9 @@ def test_both_modes(input_text, checkpoint_path):
         compile=True,
         sampling=sampling
     )
-    print(encoded.start_inds, output)
     compile_out = detokenize_output_ids(encoded.start_inds, output, tokenizer)
 
-    encoded = tokenize_and_pad([input_text], tokenizer, max_seq_length, pad_to_multiple=64)
+    encoded = tokenize_and_pad(input_texts, tokenizer, max_seq_length, pad_to_multiple=64)
     # Test with compile=True, less padding
     print("TESTING WITH COMPILE, PADDING TO 64")
     output = generate(
@@ -62,12 +60,11 @@ def test_both_modes(input_text, checkpoint_path):
         compile=True,
         sampling=sampling
     )
-    print(output)
     compile_padding_out = detokenize_output_ids(encoded.start_inds, output, tokenizer)
 
-    encoded = tokenize_and_pad([input_text], tokenizer, max_seq_length, pad_to_multiple=1)
+    encoded = tokenize_and_pad(input_texts, tokenizer, max_seq_length, pad_to_multiple=None)
     # Test with compile=True, less padding
-    print("TESTING WITH COMPILE, PADDING TO 1")
+    print("TESTING WITH COMPILE, NO PADDING")
     output = generate(
         model=model, 
         input_ids=encoded.padded,
@@ -83,10 +80,11 @@ def test_both_modes(input_text, checkpoint_path):
 
     
     # Compare outputs
-    print("NO COMPILE OUTPUT:\n", nocompile_out[0])
-    print("WITH COMPILE OUTPUT:\n", compile_out[0])
-    print("WITH COMPILE 64 PADDING OUTPUT:\n", compile_padding_out[0])
-    print("WITH COMPILE 1 PADDING OUTPUT:\n", compile_padding_1_out[0])
+    print("NO COMPILE OUTPUT:\n", nocompile_out)
+    print("WITH COMPILE OUTPUT:\n", compile_out)
+    print("WITH COMPILE 64 PADDING OUTPUT:\n", compile_padding_out)
+    print("WITH COMPILE 1 PADDING OUTPUT:\n", compile_padding_1_out)
 
 if __name__ == "__main__":
-    test_both_modes("Hello, my name is", Path("checkpoints/unsloth/Llama-3.2-1B-Instruct/model.pth"))
+    texts = ["short input", "This is a longer input that should be able to generate more text. " * 5]
+    test_both_modes(texts, Path("checkpoints/unsloth/Llama-3.2-1B-Instruct/model.pth"))

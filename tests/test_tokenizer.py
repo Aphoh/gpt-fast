@@ -47,6 +47,31 @@ def test_tokenize_and_pad_basic():
     assert torch.all(result.padded[0, 3:] == expected_tokens)
 
 
+def test_tokenize_and_pad_no_multiple():
+    tokenizer = MockTokenizer()
+    texts = ["hello", "world", "longer example"]  # lengths: 5, 5, 14
+    result = tokenize_and_pad(texts, tokenizer, max_length=256, pad_to_multiple=None)
+
+    # Check that padded shape is exactly the length of the longest sequence (14)
+    assert result.padded.shape[0] == 3  # Batch size
+    assert result.padded.shape[1] == 14  # Length of "longer example" with no additional padding
+
+    # Check start indices
+    assert result.start_inds[0].item() == 9  # 14 - 5 (length of "hello")
+    assert result.start_inds[1].item() == 9  # 14 - 5 (length of "world")
+    assert result.start_inds[2].item() == 0  # 14 - 14 (length of "longer example")
+
+    # Verify the content is correctly positioned with padding on the left
+    for i, text in enumerate(texts):
+        expected_tokens = torch.tensor([ord(c) for c in text])
+        actual_tokens = result.padded[i, result.start_inds[i]:]
+        assert torch.all(actual_tokens == expected_tokens)
+        
+        # Check that padding (zeros) is only on the left
+        if result.start_inds[i] > 0:
+            assert torch.all(result.padded[i, :result.start_inds[i]] == 0)
+
+
 def test_tokenize_and_pad_multiple_texts():
     tokenizer = MockTokenizer()
     texts = ["hello", "world", "longer example"]

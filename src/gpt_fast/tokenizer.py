@@ -1,5 +1,6 @@
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
+import warnings
 from tokenizers import Tokenizer, Encoding
 from pathlib import Path
 
@@ -80,7 +81,7 @@ def tokenize_and_pad(
     texts: List[str],
     tokenizer: TokenizerInterface,
     max_length: int,
-    pad_to_multiple: int = 64,
+    pad_to_multiple: Optional[int] = None,
 ) -> PaddedOutput:
     """
     Tokenizes a list of texts and pads them to the same length.
@@ -94,14 +95,21 @@ def tokenize_and_pad(
     Returns:
     - List[List[int]]: A list of tokenized and padded sequences.
     """
-    assert max_length % pad_to_multiple == 0, (
-        f"max_length={max_length} must be a multiple of pad_to_multiple={pad_to_multiple}"
-    )
 
     tokenized = tokenizer.encode_batch(texts)
     tensors = [torch.tensor(t, dtype=int) for t in tokenized]
     longest_seq = max(len(t) for t in tensors)
-    final_len = min(_round_to_multiple(longest_seq, pad_to_multiple), max_length)
+    if pad_to_multiple is not None:
+        assert max_length % pad_to_multiple == 0, (
+            f"max_length={max_length} must be a multiple of pad_to_multiple={pad_to_multiple}"
+        )
+        final_len = min(_round_to_multiple(longest_seq, pad_to_multiple), max_length)
+    else:
+        if longest_seq > max_length:
+            warnings.warn(
+                f"Longest sequence is {longest_seq}, which is longer than max_length={max_length}."
+            )
+        final_len = min(longest_seq, max_length)
     # Pad sequences to the same length
     tensors = [t[:final_len] for t in tensors]
     # keep track of how much padding was added to the left of each sequence
