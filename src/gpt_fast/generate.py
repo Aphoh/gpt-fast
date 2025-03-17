@@ -71,24 +71,21 @@ def prefill(
     model: Transformer,
     x: torch.Tensor,
     input_pos: torch.Tensor,
+    prefill_mask: BlockMask,
     seqlens: torch.Tensor,
-    max_seqlen: int,
     sampling: SamplingConfig = SamplingConfig(),
     return_logits=False,
-    compile=False,
 ) -> torch.Tensor:
     # x: [B, S]
     # input_pos: [B, S]
-    prefill_mask = make_prefill_mask(
-        seqlens,
-        x.shape[1],
-        max_seqlen,
-        compile=compile,
-    )
     logits = model(prefill_mask, x, input_pos)
     if return_logits:
         return logits
-    return sample(logits, sampling)[0]
+    b_inds = torch.arange(x.shape[0], device=x.device)
+    # if seqlens is 0, we sample from the first token
+    sample_idxs = (seqlens - 1).clamp(min=0)
+    to_sample = logits[b_inds, sample_idxs].unsqueeze(1)
+    return sample(to_sample, sampling)[0]
 
 
 @maybe_compile(mode="reduce-overhead", fullgraph=False, dynamic=False)
@@ -128,7 +125,7 @@ def decode_n_tokens(
     assert cur_token.shape == input_pos.shape
     new_tokens = []
     for i in tqdm(range(max_new_tokens), desc="generating", leave=False):
-        gen_mask_i = get_gen_mask(input_pos, max_seqlen, compile=compile)
+        gen_mask_i = get_gen_mask(input_pos, max_seqlen)
         next_token = decode_one_token(
             gen_mask_i=gen_mask_i,
             model=model,
@@ -168,25 +165,33 @@ def generate(
     # create an empty tensor of the expected final shape and fill in the current tokens
     B, S = input_ids.shape
 
-    input_ids = input_ids.to(device=device)
-    seqlens = seqlens.to(device=device)
+    input_ids = input_ids.to(device=device, dtype=torch.int).clamp(min=0)
+    seqlens = seqlens.to(device=device, dtype=torch.int)
 
     # This does mean the batching could cut stuff off if any prompt is too long, but let's just ignore that xD
-    if S + max_new_tokens >= max_seqlen:
+    if S + max_new_tokens > max_seqlen:
         raise ValueError(
             f"Input sequence length {S} + max_new_tokens {max_new_tokens} >= max_seqlen {max_seqlen}"
         )
 
-    output_ids = torch.empty(B, S + max_new_tokens, device=device, dtype=int)
+    output_ids = torch.empty(B, S + max_new_tokens, device=device, dtype=torch.int)
     output_ids[:, :S] = input_ids
-    prefill_input_pos = torch.arange(S, device=device)[None, :].expand(B, S)
+    prefill_input_pos = torch.arange(S, device=device, dtype=torch.int)[None, :].expand(B, S)
+
+    # We need to compute this outside prefill or inductor complains
+    prefill_mask = make_prefill_mask(
+        seqlens,
+        S,
+        max_seqlen,
+        compile=compile,
+    )
 
     next_token = prefill(
         model=model,
         x=input_ids,
         input_pos=prefill_input_pos,
+        prefill_mask=prefill_mask,
         seqlens=seqlens,
-        max_seqlen=max_seqlen,
         sampling=sampling,
         compile=compile,
     ).clone()
@@ -207,7 +212,9 @@ def generate(
     )
     num_new_tokens = next_tokens.shape[1]
     for b in range(B):
-        output_ids[b, seqlens[b] + 1 : seqlens[b] + 1 + num_new_tokens] = next_tokens[b]
+        end_idx = seqlens[b] + 1 + num_new_tokens
+        output_ids[b, seqlens[b] + 1 : end_idx] = next_tokens[b]
+        output_ids[b, end_idx:] = -1
 
     return output_ids
 
@@ -299,16 +306,14 @@ def main(
                 seqlens=encoded.seqlens,
                 max_seqlen=max_seqlen,
                 max_new_tokens=max_new_tokens,
+                device=device,
                 compile=compile,
                 sampling=sampling,
             )
 
             if n_trim != 0:
-                encoded.start_inds[:-n_trim]
                 output = output[:-n_trim]
-            completions = detokenize_output_ids(
-                encoded.start_inds, output.cpu(), tokenizer
-            )
+            completions = detokenize_output_ids(output.cpu(), tokenizer)
             write_outputs(f, batch, completions)
             # TODO do I need a model.reset_caches()
 

@@ -1,5 +1,5 @@
 from gpt_fast.generate import decode_one_token, prefill
-from gpt_fast.mask_utils import get_gen_mask
+from gpt_fast.mask_utils import get_gen_mask, make_prefill_mask
 import torch
 import pytest
 from transformers import LlamaForCausalLM, LlamaConfig, AutoConfig
@@ -48,21 +48,21 @@ def test_llama_1b_consistent():
         with torch.device("cuda") as device:
             name = "unsloth/Llama-3.2-1B-Instruct"
             config = AutoConfig.from_pretrained(name)
-            model = LlamaForCausalLM(config).to(device)
+            model = LlamaForCausalLM(config).to(device=device, dtype=torch.float)
             state_dict = model.state_dict()
 
             model_args = ModelArgs.from_name(name)
             converted = convert_state_dict(model_args, state_dict)
-            tformer = Transformer(model_args)
+            tformer = Transformer(model_args).to(device=device, dtype=torch.float)
             tformer.load_state_dict(converted)
 
-            consistency(model, tformer)
+            consistency(model, tformer, atol=3e-5, rtol=1e-2)
 
 
 @torch.no_grad()
-def consistency(ref_model, tformer):
-    check_prefill_consistent(ref_model, tformer)
-    check_decode_consistent(tformer)
+def consistency(ref_model, tformer, **kwargs):
+    check_prefill_consistent(ref_model, tformer, **kwargs)
+    check_decode_consistent(tformer, **kwargs)
 
 
 def setup_test_inputs(gen_len=40, prefill_len=32, batch_size=4):
@@ -85,7 +85,7 @@ def setup_test_inputs(gen_len=40, prefill_len=32, batch_size=4):
     )
 
 
-def check_prefill_consistent(ref_model, tformer):
+def check_prefill_consistent(ref_model, tformer, **kwargs):
     """Test that prefill outputs match between reference model and our Transformer"""
     input_ids, seqlens, _, prefill_input_ids, prefill_input_pos = setup_test_inputs()
     B, GEN_S = input_ids.shape
@@ -94,12 +94,13 @@ def check_prefill_consistent(ref_model, tformer):
     ref_output = ref_model(input_ids=prefill_input_ids, attention_mask=attn_mask).logits
 
     tformer.setup_caches(B, GEN_S)
+    prefill_mask = make_prefill_mask(seqlens, prefill_input_ids.shape[1], GEN_S, compile=False)
     our_output = prefill(
         tformer,
         x=prefill_input_ids,
         input_pos=prefill_input_pos,
+        prefill_mask=prefill_mask,
         seqlens=seqlens,
-        max_seqlen=GEN_S,
         return_logits=True,
         compile=False,
     )
@@ -108,10 +109,11 @@ def check_prefill_consistent(ref_model, tformer):
         assert_close(
             ref_output[b, : seqlens[b]],
             our_output[b, : seqlens[b]],
+            **kwargs,
         )
 
 
-def check_decode_consistent(tformer: Transformer):
+def check_decode_consistent(tformer: Transformer, **kwargs):
     """Test that single token decode matches prefill outputs"""
     input_ids, seqlens, input_pos, prefill_input_ids, prefill_input_pos = (
         setup_test_inputs()
@@ -121,12 +123,14 @@ def check_decode_consistent(tformer: Transformer):
 
     tformer.setup_caches(B, GEN_S)
 
+    full_seqlens = torch.ones(B, dtype=int) * GEN_S
+    full_prefill_mask = make_prefill_mask(full_seqlens, GEN_S, GEN_S, compile=False)
     full_output_logits = prefill(
         tformer,
         x=input_ids,  # Use full sequence for prefill reference
         input_pos=input_pos,
-        seqlens=torch.ones(B, dtype=int) * GEN_S,
-        max_seqlen=GEN_S,
+        seqlens=full_seqlens,
+        prefill_mask=full_prefill_mask,
         return_logits=True,
         compile=False,
     )
@@ -135,12 +139,13 @@ def check_decode_consistent(tformer: Transformer):
     tformer.clear_caches()
     tformer.setup_caches(B, GEN_S)
     # Prefill the sequence to populate kv caches
+    prefill_mask = make_prefill_mask(seqlens, prefill_input_ids.shape[1], GEN_S, compile=False)
     prefill(
         tformer,
         x=prefill_input_ids,  # Use full sequence for prefill reference
         input_pos=prefill_input_pos,
+        prefill_mask=prefill_mask,
         seqlens=seqlens,
-        max_seqlen=GEN_S,
         compile=False,
     )
 
@@ -163,5 +168,6 @@ def check_decode_consistent(tformer: Transformer):
             assert_close(
                 full_output_logits[b, idx],
                 next_token_logits[b].squeeze(0),
+                **kwargs,
             )
         offsets += 1

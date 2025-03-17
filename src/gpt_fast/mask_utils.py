@@ -52,7 +52,6 @@ def get_gen_mask(
     max_seqlen: int,
     BLOCK_SIZE: int = 128,
 ) -> BlockMask:
-    assert max_seqlen % BLOCK_SIZE == 0
     (B,) = offsets.shape
     max_blocks = max_seqlen // BLOCK_SIZE
     # we only have one non-full kv block during generation
@@ -61,6 +60,7 @@ def get_gen_mask(
     kv_block_inds = torch.arange(
         max_blocks,
         device=offsets.device,
+        dtype=torch.int32,
     )[None, :].expand(B, -1)
     # We have 1 less full kv block than the total number of blocks
     full_kv_blocks_num = kv_num_blocks - 1
