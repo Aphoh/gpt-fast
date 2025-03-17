@@ -1,53 +1,55 @@
-from gpt_fast.mask_utils import left_pad_mask_mod, make_base_mask, get_gen_submask
+from gpt_fast.mask_utils import offset_mask_mod, make_prefill_mask, get_gen_mask
 import torch
-from torch.nn.attention.flex_attention import flex_attention
-
-from gpt_fast.util import flex_attention_maybe_pad
-
-
-def test_left_pad_mask():
-    device = torch.device("cpu")
-    B = 4
-    BASE_S = 16
-    block_size = 4
-    start_inds = torch.arange(B) * block_size
-
-    all_base_mask = make_base_mask(B, BASE_S, BASE_S, device=device, compile=False)
-    all_base_mask.mask_mod = left_pad_mask_mod(start_inds, torch.tensor([0]))
-
-    gen_base = make_base_mask(B, BASE_S, BASE_S, device=device, compile=False)
-
-    with torch.no_grad():
-        qkv = torch.randn(B, 1, BASE_S, BASE_S, device=device)
-        all_out = flex_attention(qkv, qkv, qkv, block_mask=all_base_mask)
-
-        for query_idx in range(BASE_S):
-            gen_submask = get_gen_submask(gen_base, query_idx)
-            gen_submask.mask_mod = left_pad_mask_mod(
-                start_inds, torch.tensor([query_idx])
-            )
-            gen_out = flex_attention(
-                qkv[:, :, query_idx : query_idx + 1], qkv, qkv, block_mask=gen_submask
-            )
-            assert torch.allclose(all_out[:, :, query_idx], gen_out[:, :, 0])
+from torch.nn.attention.flex_attention import flex_attention, create_block_mask
+from torch.nn.functional import scaled_dot_product_attention
+from utils import assert_close
 
 
-def test_left_pad_works():
-    device = torch.device("cpu")
-    qkv = torch.randn(2, 1, 32, 4, device=device)
-    # same sequence, but batch 1 has a single left pad
-    qkv[1, :, 1:] = qkv[0, :, :-1]
-    qkv[1, :, 0] = 0
-    start_inds = torch.tensor([0, 1], device=device)
+def get_qkv(B=4, H=4, S=32, D=16):
+    torch.random.manual_seed(42)
+    q = torch.randn(B, H, S, D)
+    k = torch.randn(B, H // 2, S, D)
+    v = torch.randn(B, H // 2, S, D)
+    return q, k, v
 
-    mask = make_base_mask(start_inds.shape[0], 32, 32, device=device, compile=False)
-    mask.mask_mod = left_pad_mask_mod(start_inds, [0])
-    output = flex_attention(qkv, qkv, qkv, block_mask=mask)
 
-    assert torch.allclose(output[0, :, :-1], output[1, :, 1:])
+def test_prefill_mask():
+    q, k, v = get_qkv()
+    B, H, S, D = q.shape
+    ref_output = scaled_dot_product_attention(q, k, v, is_causal=True, enable_gqa=True)
+    seqlens = torch.randint(S // 2, S, (B,))
 
-    output = flex_attention_maybe_pad(
-        qkv.clone(), qkv.clone(), qkv.clone(), block_mask=mask
+    mask = make_prefill_mask(seqlens, S, S, compile=False)
+    output = flex_attention(q, k, v, block_mask=mask, enable_gqa=True)
+    for i in range(B):
+        ilen = seqlens[i]
+        assert_close(output[i, :, :ilen], ref_output[i, :, :ilen])
+
+
+def test_gen_mask():
+    q, k, v = get_qkv()
+    B, H, S, D = q.shape
+    ref_output = scaled_dot_product_attention(q, k, v, is_causal=True, enable_gqa=True)
+    offsets = torch.randint(1, S - 1, (B,))
+    mask = get_gen_mask(offsets, S, BLOCK_SIZE=S // 8)
+    reference_mask = create_block_mask(
+        offset_mask_mod(offsets), B, 1, 1, S, BLOCK_SIZE=S // 4, device=q.device
     )
 
-    assert torch.allclose(output[0, :, :-1], output[1, :, 1:])
+    k_mask, v_mask = k.clone(), v.clone()
+    q_mask = torch.zeros(B, H, 1, D, device=q.device)
+    for b in range(B):
+        j = offsets[b]
+        k_mask[b, :, j + 1 :] = 1e-9
+        v_mask[b, :, j + 1 :] = 1e-9
+        q_mask[b, :, 0] = q[b, :, j]
+
+    output1 = flex_attention(
+        q_mask, k_mask, v_mask, block_mask=reference_mask, enable_gqa=True
+    )
+    output2 = flex_attention(q_mask, k_mask, v_mask, block_mask=mask, enable_gqa=True)
+
+    for i in range(B):
+        j = offsets[i]
+        assert_close(output1[i], ref_output[i, :, j : j + 1])
+        assert_close(output2[i], ref_output[i, :, j : j + 1])

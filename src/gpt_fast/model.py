@@ -14,7 +14,7 @@ from torch import Tensor
 from torch.nn import functional as F
 from torch.nn.attention.flex_attention import BlockMask
 from gpt_fast.util import flex_attention_maybe_pad
-from gpt_fast.mask_utils import left_pad_mask_mod
+from gpt_fast.mask_utils import offset_mask_mod
 
 
 def find_multiple(n: int, k: int) -> int:
@@ -220,24 +220,30 @@ transformer_configs = {
 
 class KVCache(nn.Module):
     def __init__(
-        self, max_batch_size, max_seq_length, n_heads, head_dim, dtype=torch.bfloat16
+        self, max_batch_size, max_seqlen, n_heads, head_dim, dtype=torch.bfloat16
     ):
         super().__init__()
-        cache_shape = (max_batch_size, n_heads, max_seq_length, head_dim)
+        cache_shape = (max_batch_size, n_heads, max_seqlen, head_dim)
         self.register_buffer("k_cache", torch.zeros(cache_shape, dtype=dtype))
         self.register_buffer("v_cache", torch.zeros(cache_shape, dtype=dtype))
 
-    def update(self, offset, k_val, v_val):
+    def update(self, input_pos, k_val, v_val):
         # input_pos: [B, S], k_val, v_val: [B, H, S, D]
-        B, H, S, D = k_val.shape
+        B = len(input_pos)
 
-        # Clone the caches
+        # Get the caches directly
         k_out = self.k_cache
         v_out = self.v_cache
 
-        insert_ids = offset + torch.arange(S, device=k_val.device)
-        k_out[:, :, insert_ids] = k_val
-        v_out[:, :, insert_ids] = v_val
+        # Use vectorized indexing - construct proper indices at once
+        batch_indices = torch.arange(B, device=input_pos.device)[:, None]
+
+        # Here we index by [B, S]
+        # so k_out[batch_indices, :, input_pos] is [B, S, H, D]
+        # hence we need to transform k_val: [B, H, S, D] -> [B, S, H, D]
+        k_out[batch_indices, :, input_pos] = k_val.transpose(1, 2)
+        v_out[batch_indices, :, input_pos] = v_val.transpose(1, 2)
+
         return k_out, v_out
 
 
@@ -257,24 +263,21 @@ class Transformer(nn.Module):
 
         self.freqs_cis: Optional[Tensor] = None
         self.max_batch_size = -1
-        self.max_seq_length = -1
-        self.left_pad_mask_mod = left_pad_mask_mod
+        self.max_seqlen = -1
+        self.offset_mask_mod = offset_mask_mod
 
     def clear_caches(self):
         self.freqs_cis = None
         self.max_batch_size = -1
-        self.max_seq_length = -1
+        self.max_seqlen = -1
         for b in self.layers:
             b.attention.kv_cache = None
 
-    def setup_caches(self, max_batch_size, max_seq_length):
-        if (
-            self.max_seq_length >= max_seq_length
-            and self.max_batch_size >= max_batch_size
-        ):
+    def setup_caches(self, max_batch_size, max_seqlen):
+        if self.max_seqlen >= max_seqlen and self.max_batch_size >= max_batch_size:
             return
-        max_seq_length = find_multiple(max_seq_length, 8)
-        self.max_seq_length = max_seq_length
+        max_seqlen = find_multiple(max_seqlen, 8)
+        self.max_seqlen = max_seqlen
         self.max_batch_size = max_batch_size
         dtype = self.output.weight.dtype
         # For quantized layers, dtype is encoded in scales
@@ -285,7 +288,7 @@ class Transformer(nn.Module):
         for b in self.layers:
             b.attention.kv_cache = KVCache(
                 max_batch_size,
-                max_seq_length,
+                max_seqlen,
                 self.config.n_local_heads,
                 self.config.head_dim,
                 dtype,
@@ -304,16 +307,13 @@ class Transformer(nn.Module):
         mask: BlockMask,
         idx: Tensor,
         input_pos: Tensor,
-        start_inds: Tensor,
-        offset: torch.Tensor,
     ) -> Tensor:
         assert self.freqs_cis is not None, "Caches must be initialized first"
-        mask.mask_mod = self.left_pad_mask_mod(start_inds, offset)
         freqs_cis = self.freqs_cis[input_pos]
         x = self.tok_embeddings(idx)
 
         for i, layer in enumerate(self.layers):
-            x = layer(x, freqs_cis, mask, offset)
+            x = layer(x, freqs_cis, mask, input_pos)
         x = self.norm(x)
         logits = self.output(x)
         return logits
@@ -336,9 +336,9 @@ class TransformerBlock(nn.Module):
         x: Tensor,
         freqs_cis: Tensor,
         mask: BlockMask,
-        offset: Tensor,
+        input_pos: Tensor,
     ) -> Tensor:
-        h = x + self.attention(self.attention_norm(x), freqs_cis, mask, offset)
+        h = x + self.attention(self.attention_norm(x), freqs_cis, mask, input_pos)
         out = h + self.feed_forward(self.ffn_norm(h))
         return out
 
@@ -372,7 +372,7 @@ class Attention(nn.Module):
         x: Tensor,
         freqs_cis: Tensor,
         mask: BlockMask,
-        offset: torch.Tensor,
+        input_pos: torch.Tensor,
     ) -> Tensor:
         bsz, seqlen, _ = x.shape
 
@@ -389,7 +389,7 @@ class Attention(nn.Module):
         q, k, v = map(lambda x: x.transpose(1, 2), (q, k, v))
 
         if self.kv_cache is not None:
-            k, v = self.kv_cache.update(offset, k, v)
+            k, v = self.kv_cache.update(input_pos, k, v)
 
         y = flex_attention_maybe_pad(
             q, k, v, block_mask=mask, enable_gqa=(self.n_head != self.n_local_heads)

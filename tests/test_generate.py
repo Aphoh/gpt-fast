@@ -1,7 +1,7 @@
 import pytest
 import torch
 from gpt_fast.generate import SamplingConfig, decode_n_tokens, generate, prefill
-from gpt_fast.mask_utils import make_base_mask
+from gpt_fast.mask_utils import make_prefill_mask
 from gpt_fast.model import Transformer, ModelArgs
 from gpt_fast.ckpt_utils import convert_state_dict
 from gpt_fast.util import input_pos_from_start_inds
@@ -47,7 +47,6 @@ def small_model(reference_model):
     return tformer
 
 
-@pytest.mark.slow
 def test_llama_decode():
     with torch.device("cuda"):
         name = "unsloth/Llama-3.2-1B-Instruct"
@@ -93,7 +92,7 @@ def test_decode_consistency(
         small_model,
         input_ids=input_ids,
         start_inds=start_inds,
-        max_seq_length=max_seq_length,
+        max_seqlen=max_seq_length,
         max_new_tokens=max_seq_length - prompt_seq_length,
         device=input_ids.device,
         compile=False,
@@ -125,7 +124,7 @@ def test_prefill(small_model: Transformer):
             x=input_ids,
             input_pos=input_pos,
             start_inds=start_inds,
-            max_seq_length=max_seq_length,
+            max_seqlen=max_seq_length,
             compile=False,
         )
 
@@ -141,7 +140,7 @@ def test_decode_n(small_model: Transformer):
 
     small_model.setup_caches(batch_size, max_seq_length)
 
-    base_mask = make_base_mask(
+    base_mask = make_prefill_mask(
         batch_size, max_seq_length, max_seq_length, device=start_inds.device
     )
 
@@ -177,7 +176,7 @@ def test_generate(small_model: Transformer):
             model=small_model,
             input_ids=input_ids,
             start_inds=start_inds,
-            max_seq_length=max_seq_length,
+            max_seqlen=max_seq_length,
             max_new_tokens=max_new_tokens,
             device=device,
             compile=False,

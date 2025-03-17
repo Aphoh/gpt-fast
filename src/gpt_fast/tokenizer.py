@@ -70,8 +70,8 @@ def _round_to_multiple(n: int, multiple: int):
 
 @dataclass
 class PaddedOutput:
-    start_inds: torch.IntTensor
-    """[B] tensor of the starting index of each sequence after padding."""
+    seqlens: torch.IntTensor
+    """[B] tensor of the sequence lengths before padding."""
     padded: torch.IntTensor
     """[B, S] tensor of padded sequences."""
 
@@ -90,9 +90,6 @@ def tokenize_and_pad(
     - tokenizer (TokenizerInterface): The tokenizer to use.
     - max_length (int): The maximum length to pad the sequences to.
     - pad_to_multiple (int): The multiple to pad the sequences to.
-
-    Returns:
-    - List[List[int]]: A list of tokenized and padded sequences.
     """
     assert max_length % pad_to_multiple == 0, (
         f"max_length={max_length} must be a multiple of pad_to_multiple={pad_to_multiple}"
@@ -105,17 +102,16 @@ def tokenize_and_pad(
     # Pad sequences to the same length
     tensors = [t[:final_len] for t in tensors]
     # keep track of how much padding was added to the left of each sequence
-    start_inds = [final_len - t.shape[0] for t in tensors]
+    seqlens = torch.tensor([len(t) for t in tensors])
     padded = torch.nn.utils.rnn.pad_sequence(
-        tensors, batch_first=True, padding_value=0, padding_side="left"
+        tensors, batch_first=True, padding_value=-1, padding_side="right"
     )
     extra_padding = final_len - padded.shape[1]
-    padded = torch.nn.functional.pad(padded, (extra_padding, 0), value=0)
-    return PaddedOutput(start_inds=torch.tensor(start_inds), padded=padded)
+    padded = torch.nn.functional.pad(padded, (0, extra_padding), value=-1)
+    return PaddedOutput(seqlens=seqlens, padded=padded)
 
 
 def detokenize_output_ids(
-    start_inds: torch.IntTensor,
     output_ids: torch.IntTensor,
     tokenizer: TokenizerInterface,
 ):
@@ -135,6 +131,6 @@ def detokenize_output_ids(
     for i in range(B):
         first_pad_idx = torch.argwhere(output_ids[i] == -1).squeeze(-1)
         end_idx = first_pad_idx[0] if len(first_pad_idx) > 0 else S
-        to_decode.append(output_ids[i, start_inds[i] : end_idx].tolist())
+        to_decode.append(output_ids[i, :end_idx].tolist())
 
     return tokenizer.decode_batch(to_decode)

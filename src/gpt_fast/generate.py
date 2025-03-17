@@ -15,12 +15,12 @@ from torch.nn.attention.flex_attention import BlockMask
 from tqdm import tqdm
 
 from gpt_fast.inputs import Batch, read_ids, read_input_batches, write_outputs
-from gpt_fast.util import input_pos_from_start_inds, load_model, maybe_compile
+from gpt_fast.util import load_model, maybe_compile
 from gpt_fast.model import Transformer
 from gpt_fast.tokenizer import detokenize_output_ids, get_tokenizer, tokenize_and_pad
 from gpt_fast.mask_utils import (
-    make_base_mask,
-    get_gen_submask,
+    make_prefill_mask,
+    get_gen_mask,
 )
 
 
@@ -66,26 +66,26 @@ def sample(logits, config: SamplingConfig):
     return idx_next, probs
 
 
-@maybe_compile(fullgraph=False, dynamic=False)
+@maybe_compile(fullgraph=True, dynamic=False)
 def prefill(
     model: Transformer,
     x: torch.Tensor,
     input_pos: torch.Tensor,
-    start_inds: torch.Tensor,
-    max_seq_length: int,
+    seqlens: torch.Tensor,
+    max_seqlen: int,
     sampling: SamplingConfig = SamplingConfig(),
     return_logits=False,
+    compile=False,
 ) -> torch.Tensor:
     # x: [B, S]
     # input_pos: [B, S]
-    prefill_mask = make_base_mask(
-        start_inds.shape[0],
+    prefill_mask = make_prefill_mask(
+        seqlens,
         x.shape[1],
-        max_seq_length,
-        device=x.device,
+        max_seqlen,
+        compile=compile,
     )
-    offset = torch.tensor([0], device=x.device)
-    logits = model(prefill_mask, x, input_pos, start_inds, offset=offset)
+    logits = model(prefill_mask, x, input_pos)
     if return_logits:
         return logits
     return sample(logits, sampling)[0]
@@ -96,9 +96,7 @@ def decode_one_token(
     gen_mask_i: BlockMask,
     model: Transformer,
     cur_token: torch.Tensor,
-    start_inds: torch.Tensor,
     input_pos: torch.Tensor,
-    offset: torch.Tensor,
     sampling: SamplingConfig = SamplingConfig(),
     return_logits=False,
 ) -> torch.IntTensor:
@@ -106,8 +104,6 @@ def decode_one_token(
         gen_mask_i,
         cur_token.unsqueeze(-1),
         input_pos=input_pos.unsqueeze(-1),
-        start_inds=start_inds,
-        offset=offset,
     )
     if return_logits:
         return logits
@@ -116,13 +112,11 @@ def decode_one_token(
 
 
 def decode_n_tokens(
-    base_mask: BlockMask,
-    query_pos: int,
     model: Transformer,
     cur_token: torch.Tensor,
-    start_inds: torch.Tensor,
     input_pos: torch.Tensor,
     max_new_tokens: int,
+    max_seqlen: int,
     sampling: SamplingConfig = SamplingConfig(),
     compile: bool = False,
 ) -> torch.IntTensor:
@@ -134,20 +128,16 @@ def decode_n_tokens(
     assert cur_token.shape == input_pos.shape
     new_tokens = []
     for i in tqdm(range(max_new_tokens), desc="generating", leave=False):
-        gen_mask_i = get_gen_submask(base_mask, query_pos)
-        offset = torch.tensor([query_pos], device=cur_token.device)
+        gen_mask_i = get_gen_mask(input_pos, max_seqlen, compile=compile)
         next_token = decode_one_token(
-            gen_mask_i,
-            model,
-            cur_token,
-            start_inds,
-            input_pos,
-            offset=offset,
+            gen_mask_i=gen_mask_i,
+            model=model,
+            cur_token=cur_token,
+            input_pos=input_pos,
             sampling=sampling,
             compile=compile,
         )
         input_pos += 1
-        query_pos += 1
         new_tokens.append(next_token.clone())
         cur_token = next_token[:, 0].clone()
 
@@ -158,8 +148,8 @@ def decode_n_tokens(
 def generate(
     model: Transformer,
     input_ids: torch.Tensor,
-    start_inds: torch.Tensor,
-    max_seq_length: int,
+    seqlens: torch.Tensor,
+    max_seqlen: int,
     max_new_tokens: int,
     *,
     device: torch.device,
@@ -168,8 +158,8 @@ def generate(
 ) -> torch.Tensor:
     """
     input_ids: [B, S] left padded batch of input ids
-    start_inds: [B] start index of the unpadded input in input_ids
-    max_seq_length: int maximum sequence length
+    seqlens: [B] end index of the unpadded input of each batch
+    max_seqlen: int maximum sequence length
     max_new_tokens: int maximum number of new tokens to generate
 
     Returns output_ids: [B, new_tokens] batch of generated tokens.
@@ -179,42 +169,45 @@ def generate(
     B, S = input_ids.shape
 
     input_ids = input_ids.to(device=device)
-    start_inds = start_inds.to(device=device)
+    seqlens = seqlens.to(device=device)
 
     # This does mean the batching could cut stuff off if any prompt is too long, but let's just ignore that xD
+    if S + max_new_tokens >= max_seqlen:
+        raise ValueError(
+            f"Input sequence length {S} + max_new_tokens {max_new_tokens} >= max_seqlen {max_seqlen}"
+        )
+
     output_ids = torch.empty(B, S + max_new_tokens, device=device, dtype=int)
     output_ids[:, :S] = input_ids
-    prefill_input_pos = input_pos_from_start_inds(start_inds, S)
+    prefill_input_pos = torch.arange(S, device=device)[None, :].expand(B, S)
 
     next_token = prefill(
         model=model,
         x=input_ids,
         input_pos=prefill_input_pos,
-        start_inds=start_inds,
-        max_seq_length=max_seq_length,
+        seqlens=seqlens,
+        max_seqlen=max_seqlen,
         sampling=sampling,
         compile=compile,
     ).clone()
-    output_ids[:, S] = next_token.squeeze(1)
+    b_inds = torch.arange(B, device=device)
+    output_ids[b_inds, seqlens] = next_token.squeeze(1)
 
-    input_pos = prefill_input_pos[:, -1] + 1
+    gen_input_pos = seqlens.clone()
+    cur_token = next_token.squeeze(1)
 
-    # TODO: stopping criteria
-    base_mask = make_base_mask(
-        B, max_seq_length, max_seq_length, device=device, compile=compile
-    )
-    generated_tokens = decode_n_tokens(
-        base_mask=base_mask,
-        query_pos=S,
+    next_tokens = decode_n_tokens(
         model=model,
-        cur_token=next_token.squeeze(1),
-        start_inds=start_inds,
-        input_pos=input_pos,
-        max_new_tokens=max_new_tokens - 1,
-        compile=compile,
+        cur_token=cur_token,
+        input_pos=gen_input_pos,
+        max_new_tokens=max_new_tokens - 1,  # already decoded one
+        max_seqlen=max_seqlen,
         sampling=sampling,
+        compile=compile,
     )
-    output_ids[:, S + 1 : S + 1 + generated_tokens.shape[-1]] = generated_tokens
+    num_new_tokens = next_tokens.shape[1]
+    for b in range(B):
+        output_ids[b, seqlens[b] + 1 : seqlens[b] + 1 + num_new_tokens] = next_tokens[b]
 
     return output_ids
 
@@ -239,7 +232,7 @@ def main(
     input_file: Path,
     output_file: Path,
     max_new_tokens: int,
-    max_seq_length: Optional[int],
+    max_seqlen: Optional[int],
     batch_size: int,
     sampling: SamplingConfig,
     checkpoint_path: Path,
@@ -282,15 +275,15 @@ def main(
 
     torch.manual_seed(1234)
 
-    if max_seq_length is not None:
-        assert max_seq_length <= model.config.block_size, (
-            f"{max_seq_length} > {model.config.max_seq_length}"
+    if max_seqlen is not None:
+        assert max_seqlen <= model.config.block_size, (
+            f"{max_seqlen} > {model.config.block_size}"
         )
     else:
-        max_seq_length = model.config.block_size
+        max_seqlen = model.config.block_size
 
     with device:
-        model.setup_caches(max_batch_size=batch_size, max_seq_length=max_seq_length)
+        model.setup_caches(max_batch_size=batch_size, max_seqlen=max_seqlen)
 
     with open(output_file, "a") as f:
         for batch in tqdm(input_iterator, desc="Generating"):
@@ -299,14 +292,13 @@ def main(
             if n_trim != 0:
                 batch.texts.extend(["pad"] * (n_trim))
             device_sync(device=device)
-            encoded = tokenize_and_pad(batch.texts, tokenizer, max_seq_length)
+            encoded = tokenize_and_pad(batch.texts, tokenizer, max_seqlen)
             output = generate(
                 model=model,
                 input_ids=encoded.padded,
-                start_inds=encoded.start_inds,
-                max_seq_length=max_seq_length,
+                seqlens=encoded.seqlens,
+                max_seqlen=max_seqlen,
                 max_new_tokens=max_new_tokens,
-                device=device,
                 compile=compile,
                 sampling=sampling,
             )
@@ -344,7 +336,7 @@ if __name__ == "__main__":
         "--max_new_tokens", type=int, default=200, help="Maximum number of new tokens."
     )
     parser.add_argument(
-        "--max_seq_length",
+        "--max_seqlen",
         type=int,
         help="Maximum sequence length for generation. Useful for limiting kv cache size.",
     )
@@ -377,7 +369,7 @@ if __name__ == "__main__":
     input_file: Path = args.input_file
     output_file: Path = args.output_file
     max_new_tokens: int = args.max_new_tokens
-    max_seq_length: Optional[int] = args.max_seq_length
+    max_seqlen: Optional[int] = args.max_seqlen
     batch_size: int = args.batch_size
     top_k: int = args.top_k
     temperature: float = args.temperature
@@ -391,7 +383,7 @@ if __name__ == "__main__":
         input_file=input_file,
         output_file=output_file,
         max_new_tokens=max_new_tokens,
-        max_seq_length=max_seq_length,
+        max_seqlen=max_seqlen,
         batch_size=batch_size,
         sampling=sampling,
         compile=compile,

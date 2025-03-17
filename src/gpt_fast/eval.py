@@ -64,7 +64,7 @@ def setup_cache_padded_seq_input_pos_max_seq_length_for_prefill(
     input_pos = torch.arange(0, T, device=device)
 
     with torch.device(device):
-        model.setup_caches(max_batch_size=1, max_seq_length=max_seq_length)
+        model.setup_caches(max_batch_size=1, max_seqlen=max_seq_length)
 
     return seq, input_pos, max_seq_length
 
