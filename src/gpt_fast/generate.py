@@ -4,6 +4,7 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 from dataclasses import dataclass
+from functools import partial
 import time
 from pathlib import Path
 from typing import Optional
@@ -15,6 +16,12 @@ from torch.nn.attention.flex_attention import BlockMask
 from tqdm import tqdm
 
 from gpt_fast.inputs import Batch, read_ids, read_input_batches, write_outputs
+from gpt_fast.stopping import (
+    StoppingCondition,
+    combine_stopping_conditions,
+    contains_word_stopping_condition,
+    ignore_batch_inds,
+)
 from gpt_fast.util import load_model, maybe_compile
 from gpt_fast.model import Transformer
 from gpt_fast.tokenizer import detokenize_output_ids, get_tokenizer, tokenize_and_pad
@@ -116,6 +123,7 @@ def decode_n_tokens(
     max_seqlen: int,
     sampling: SamplingConfig = SamplingConfig(),
     compile: bool = False,
+    stopping_condition: Optional[StoppingCondition] = None,
 ) -> torch.IntTensor:
     """
     cur_token: [B] current token
@@ -124,7 +132,8 @@ def decode_n_tokens(
     """
     assert cur_token.shape == input_pos.shape
     new_tokens = []
-    for i in tqdm(range(max_new_tokens), desc="generating", leave=False):
+    stop_map = torch.zeros(cur_token.shape, dtype=torch.bool, device=cur_token.device)
+    for i in (pbar := tqdm(range(max_new_tokens), desc="generating", leave=False)):
         gen_mask_i = get_gen_mask(input_pos, max_seqlen)
         next_token = decode_one_token(
             gen_mask_i=gen_mask_i,
@@ -135,8 +144,14 @@ def decode_n_tokens(
             compile=compile,
         )
         input_pos += 1
+        next_token[stop_map, 0] = -1
         new_tokens.append(next_token.clone())
         cur_token = next_token[:, 0].clone()
+        if stopping_condition is not None:
+            stop_map |= stopping_condition(torch.hstack(new_tokens))
+            pbar.set_description(f"generating {stop_map.sum().item()}/{len(stop_map)}")
+            if stop_map.all():
+                break
 
     return torch.cat(new_tokens, -1)
 
@@ -152,6 +167,7 @@ def generate(
     device: torch.device,
     compile: bool,
     sampling: SamplingConfig = SamplingConfig(),
+    stopping_condition: Optional[StoppingCondition] = None,
 ) -> torch.Tensor:
     """
     input_ids: [B, S] left padded batch of input ids
@@ -174,9 +190,11 @@ def generate(
             f"Input sequence length {S} + max_new_tokens {max_new_tokens} >= max_seqlen {max_seqlen}"
         )
 
-    output_ids = torch.empty(B, S + max_new_tokens, device=device, dtype=torch.int)
+    output_ids = -torch.ones(B, S + max_new_tokens, device=device, dtype=torch.int)
     output_ids[:, :S] = input_ids
-    prefill_input_pos = torch.arange(S, device=device, dtype=torch.int)[None, :].expand(B, S)
+    prefill_input_pos = torch.arange(S, device=device, dtype=torch.int)[None, :].expand(
+        B, S
+    )
 
     # We need to compute this outside prefill or inductor complains
     prefill_mask = make_prefill_mask(
@@ -209,12 +227,12 @@ def generate(
         max_seqlen=max_seqlen,
         sampling=sampling,
         compile=compile,
+        stopping_condition=stopping_condition,
     )
     num_new_tokens = next_tokens.shape[1]
     for b in range(B):
         end_idx = seqlens[b] + 1 + num_new_tokens
         output_ids[b, seqlens[b] + 1 : end_idx] = next_tokens[b]
-        output_ids[b, end_idx:] = -1
 
     return output_ids
 
@@ -292,12 +310,25 @@ def main(
     with device:
         model.setup_caches(max_batch_size=batch_size, max_seqlen=max_seqlen)
 
+    stopping_condition = partial(
+        contains_word_stopping_condition,
+        tokenizer=tokenizer,
+        stop_strings=["<|eot_id|>", "<|end_of_text|>"],
+    )
     with open(output_file, "a") as f:
         for batch in tqdm(input_iterator, desc="Generating"):
             batch: Batch
             n_trim = batch_size - len(batch.texts)
             if n_trim != 0:
                 batch.texts.extend(["pad"] * (n_trim))
+                stopping_condition = combine_stopping_conditions(
+                    stopping_condition,
+                    ignore_batch_inds(
+                        device=device,
+                        B=batch_size,
+                        batch_indices=range(len(batch.texts), batch_size),
+                    ),
+                )
             device_sync(device=device)
             encoded = tokenize_and_pad(batch.texts, tokenizer, max_seqlen)
             output = generate(
@@ -309,6 +340,7 @@ def main(
                 device=device,
                 compile=compile,
                 sampling=sampling,
+                stopping_condition=stopping_condition,
             )
 
             if n_trim != 0:

@@ -122,3 +122,66 @@ def test_decode_consistency(
             output[b, :gen_seqlen],
             ref_output[0, :gen_seqlen],
         )
+
+
+@torch.inference_mode()
+def test_stopping_condition(small_model: Transformer):
+    torch.random.manual_seed(42)
+    # Input setup - similar to test_decode_consistency
+    B = 4
+    PREFILL_S = 16
+    GEN_S = 32
+
+    input_ids = torch.zeros((B, PREFILL_S), dtype=torch.int)
+    seqlens = torch.randint(2, PREFILL_S, (B,))
+
+    small_model.setup_caches(B, GEN_S)
+
+    max_new_tokens = GEN_S - PREFILL_S
+
+    # First generate without stopping condition
+    output_no_stop = generate(
+        small_model,
+        input_ids=input_ids,
+        seqlens=seqlens,
+        max_seqlen=GEN_S,
+        max_new_tokens=max_new_tokens,
+        device=input_ids.device,
+        compile=False,
+        sampling=SamplingConfig(top_k=None, temperature=0.0),
+    )
+
+    stop_inds = GEN_S - torch.arange(B) - 1
+    stop_tokens = torch.zeros(B, dtype=torch.int, device=input_ids.device)
+    for b in range(B):
+        stop_tokens[b] = output_no_stop[b, stop_inds[b]]
+
+    # Create a stopping condition that stops when it sees the specific token
+    def custom_stopping_condition(tokens):
+        # tokens shape is [B, tokens_generated_so_far]
+        # Return a boolean tensor of shape [B]
+        # Check if the token at stop_gen_pos position matches our stop token
+        return tokens[:, -1] == stop_tokens
+
+    # Generate again with the stopping condition
+    small_model.setup_caches(B, GEN_S)  # Reset caches
+    output_with_stop = generate(
+        small_model,
+        input_ids=input_ids,
+        seqlens=seqlens,
+        max_seqlen=GEN_S,
+        max_new_tokens=max_new_tokens,
+        device=input_ids.device,
+        compile=False,
+        sampling=SamplingConfig(top_k=None, temperature=0.0),
+        stopping_condition=custom_stopping_condition,
+    )
+
+    # Check the results
+    for b in range(B):
+        end_idx = stop_inds[b] + 1
+        # Check that the outputs match up to the stopping point
+        assert torch.all(output_with_stop[b, :end_idx] == output_no_stop[b, :end_idx])
+
+        # Check that all tokens after the stopping point are -1
+        assert torch.all(output_with_stop[b, end_idx:] == -1)

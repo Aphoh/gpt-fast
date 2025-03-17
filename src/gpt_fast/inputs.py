@@ -31,15 +31,18 @@ def read_input_batches(
     batch_ids = []
     with open(input_path, "r") as f:
         for line in f:
-            input = json.loads(line)
-            if completed_ids and input["id"] in completed_ids:
-                continue
-            batch_texts.append(input["text"])
-            batch_ids.append(input["id"])
-            if len(batch_texts) == batch_size:
-                yield Batch(batch_texts, batch_ids)
-                batch_texts = []
-                batch_ids = []
+            if line:
+                if not line.strip():
+                    continue
+                input = json.loads(line)
+                if completed_ids and input["id"] in completed_ids:
+                    continue
+                batch_texts.append(input["text"])
+                batch_ids.append(input["id"])
+                if len(batch_texts) == batch_size:
+                    yield Batch(batch_texts, batch_ids)
+                    batch_texts = []
+                    batch_ids = []
     if batch_texts:
         yield Batch(batch_texts, batch_ids)
 
