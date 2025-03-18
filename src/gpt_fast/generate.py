@@ -42,10 +42,10 @@ def device_sync(device: torch.device) -> None:
 
 default_device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
-
 @dataclass(frozen=True)
 class SamplingConfig:
     top_k: Optional[int] = None
+    top_p: Optional[float] = None  # Added top_p parameter
     temperature: float = 1.0
 
 
@@ -56,19 +56,46 @@ def multinomial_sample_one_no_sync(
     return torch.argmax(probs_sort / q, dim=-1, keepdim=True).to(dtype=torch.int)
 
 
-def logits_to_probs(logits, temperature: float = 1.0, top_k: Optional[int] = None):
+def logits_to_probs(logits, temperature: float = 1.0, top_k: Optional[int] = None, top_p: Optional[float] = None):
     logits = logits / max(temperature, 1e-5)
 
     if top_k is not None:
         v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
         pivot = v.select(-1, -1).unsqueeze(-1)
         logits = torch.where(logits < pivot, -float("Inf"), logits)
+    
     probs = torch.nn.functional.softmax(logits, dim=-1)
+    
+    if top_p is not None and top_p < 1.0:
+        # Sort probabilities in descending order
+        sorted_probs, sorted_indices = torch.sort(probs, dim=-1, descending=True)
+        
+        # Calculate cumulative probabilities
+        cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+        
+        # Find tokens to keep (cumulative prob <= p)
+        sorted_mask = cumulative_probs <= top_p
+        
+        # Always keep the highest probability token
+        sorted_mask[..., 0] = True
+        
+        # Create a mask of tokens to keep in the original order
+        mask_to_keep = torch.zeros_like(probs, dtype=torch.bool)
+        
+        # Use scatter to apply the mask without loops
+        mask_to_keep.scatter_(-1, sorted_indices, sorted_mask)
+        
+        # Apply the mask
+        probs = probs * mask_to_keep.float()
+        
+        # Renormalize
+        probs = probs / probs.sum(dim=-1, keepdim=True).clamp(min=1e-10)
+    
     return probs
 
 
 def sample(logits, config: SamplingConfig):
-    probs = logits_to_probs(logits[:, -1], config.temperature, config.top_k)
+    probs = logits_to_probs(logits[:, -1], config.temperature, config.top_k, config.top_p)
     idx_next = multinomial_sample_one_no_sync(probs)
     return idx_next, probs
 
@@ -381,6 +408,9 @@ if __name__ == "__main__":
         "--batch_size", type=int, default=4, help="Batch size to run with"
     )
     parser.add_argument("--top_k", type=int, default=200, help="Top-k for sampling.")
+        # Add this to the argument parser section
+    parser.add_argument("--top_p", type=float, default=None, help="Top-p (nucleus) sampling threshold.")
+    
     parser.add_argument(
         "--temperature", type=float, default=1.0, help="Temperature for sampling."
     )
@@ -413,7 +443,7 @@ if __name__ == "__main__":
     checkpoint_path: Path = args.checkpoint_path
     device: torch.device = torch.device(args.device)
     compile: bool = args.compile
-    sampling = SamplingConfig(top_k=top_k, temperature=temperature)
+    sampling = SamplingConfig(top_k=top_k, top_p=args.top_p, temperature=temperature)
 
     args = parser.parse_args()
     main(
