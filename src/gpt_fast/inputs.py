@@ -7,7 +7,7 @@ They should be jsonl files with the format
 from dataclasses import dataclass
 import json
 from pathlib import Path
-from typing import Generator, List, Optional, Set, TextIO
+from typing import Any, Dict, Generator, List, Optional, Set, TextIO
 from tqdm import tqdm
 
 
@@ -19,6 +19,8 @@ class Batch:
 
     texts: List[str]
     ids: List[str]
+    stop_words: List[List[str]]
+    extras: List[Dict[str, Any]]
 
 
 def read_input_batches(
@@ -27,24 +29,24 @@ def read_input_batches(
     """
     Read inputs from a jsonl file and yield them in batches. Skips any inputs with ids in completed_ids.
     """
-    batch_texts = []
-    batch_ids = []
+    texts, ids, stop_words, extras = [], [], [], []
     with open(input_path, "r") as f:
         for line in f:
             if line:
                 if not line.strip():
                     continue
-                input = json.loads(line)
+                input: Dict[str, Any] = json.loads(line)
                 if completed_ids and input["id"] in completed_ids:
                     continue
-                batch_texts.append(input["text"])
-                batch_ids.append(input["id"])
-                if len(batch_texts) == batch_size:
-                    yield Batch(batch_texts, batch_ids)
-                    batch_texts = []
-                    batch_ids = []
-    if batch_texts:
-        yield Batch(batch_texts, batch_ids)
+                texts.append(input.pop("text"))
+                ids.append(input.pop("id"))
+                stop_words.append(input.pop("stop_words", []))
+                extras.append(input)
+                if len(texts) == batch_size:
+                    yield Batch(texts, ids, stop_words, extras)
+                    texts, ids, stop_words, extras = [], [], [], []
+    if texts:
+        yield Batch(texts, ids, stop_words, extras)
 
 
 def read_ids(input_path: Path) -> Set[str]:
@@ -67,8 +69,9 @@ def write_outputs(output_file: TextIO, batch: Batch, outputs: List[str]) -> None
         output,
         input_text,
         _id,
-    ) in zip(outputs, batch.texts, batch.ids):
+        extras,
+    ) in zip(outputs, batch.texts, batch.ids, batch.extras):
         output_file.write(
-            json.dumps({"input_text": input_text, "id": _id, "output": output}) + "\n"
+            json.dumps({"input_text": input_text, "id": _id, "output": output} | extras) + "\n"
         )
         output_file.flush()

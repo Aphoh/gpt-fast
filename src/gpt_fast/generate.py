@@ -310,15 +310,15 @@ def main(
     with device:
         model.setup_caches(max_batch_size=batch_size, max_seqlen=max_seqlen)
 
-    stopping_condition = partial(
-        contains_word_stopping_condition,
-        tokenizer=tokenizer,
-        stop_strings=["<|eot_id|>", "<|end_of_text|>"],
-    )
     with open(output_file, "a") as f:
         for batch in tqdm(input_iterator, desc="Generating"):
             batch: Batch
             n_trim = batch_size - len(batch.texts)
+            stopping_condition = partial(
+                contains_word_stopping_condition,
+                tokenizer=tokenizer,
+                stop_strings=batch.stop_words,
+            )
             if n_trim != 0:
                 batch.texts.extend(["pad"] * (n_trim))
                 stopping_condition = combine_stopping_conditions(

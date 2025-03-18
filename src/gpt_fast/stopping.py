@@ -33,7 +33,7 @@ def contains_word_stopping_condition(
     output_tokens: torch.Tensor,
     *,
     tokenizer: TokenizerInterface,
-    stop_strings: List[str],
+    stop_strings: List[List[str]],
     token_window: int = 10,
 ):
     B, _ = output_tokens.shape
@@ -43,10 +43,11 @@ def contains_word_stopping_condition(
     stop_map = torch.zeros(B, dtype=torch.bool, device=output_tokens.device)
     check_strings = tokenizer.decode_batch(check_tokens)
     for b in range(B):
-        for stop_string in stop_strings:
-            if stop_string in check_strings[b]:
-                stop_map[b] = True
-                break
+        if b < len(stop_strings):
+            for stop_string in stop_strings[b]:
+                if stop_string in check_strings[b]:
+                    stop_map[b] = True
+                    break
     return stop_map
 
 
