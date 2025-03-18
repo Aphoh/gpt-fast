@@ -171,3 +171,23 @@ def get_model_size(model):
                 ]
             )
     return model_size, params
+
+
+def keep_topk(
+    logits: torch.Tensor, topk: int, dim: int = -1
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Keep only the topk values of a tensor along a given dimension.
+    """
+    _, indices = logits.topk(topk, dim=dim, sorted=False)
+    mask = torch.zeros_like(logits, dtype=torch.bool)
+    mask.scatter_(dim, indices, True)
+    return mask * logits
+
+def expand_router_probs(probs: torch.Tensor, rank: int) -> torch.Tensor:
+    """
+    Expand the probabilities of a router to rank `rank`
+    probs: [B, N]
+    output: [B, N*rank]
+    """
+    return probs.unsqueeze(-1).expand(-1, -1, rank).reshape(-1, rank * probs.shape[-1])

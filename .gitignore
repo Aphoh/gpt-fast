@@ -17,3 +17,5 @@ original_adapter.py
 .local
 .triton
 .triton
+
+*.jsonl

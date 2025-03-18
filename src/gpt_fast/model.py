@@ -13,7 +13,7 @@ import torch.nn as nn
 from torch import Tensor
 from torch.nn import functional as F
 from torch.nn.attention.flex_attention import BlockMask
-from gpt_fast.util import flex_attention_maybe_pad
+from gpt_fast.util import expand_router_probs, flex_attention_maybe_pad, keep_topk
 from gpt_fast.mask_utils import offset_mask_mod
 
 
@@ -21,6 +21,28 @@ def find_multiple(n: int, k: int) -> int:
     if n % k == 0:
         return n
     return n + k - (n % k)
+
+
+@dataclass
+class RoutableArgs:
+    num_experts: int = 64
+    expert_rank: int = 16
+    top_k: int = 4
+    disable_expert_mask: bool = False
+    ident_expert_mask: bool = False
+    scale: float = 1.0
+    prefill_expert: bool = False
+    route_each_layer: bool = False
+    router_activation: str = "softmax"
+    router_act_before_topk: bool = False
+
+    @property
+    def prefill_expert_size(self):
+        return self.expert_rank * self.top_k if self.prefill_expert else 0
+
+    @property
+    def total_expert_rank(self):
+        return self.expert_rank * self.num_experts + self.prefill_expert_size
 
 
 @dataclass
@@ -44,6 +66,12 @@ class ModelArgs:
     norm_type: Literal["rmsnorm", "layernorm"] = "rmsnorm"
     act_fn: Literal["silu", "gelu_approx"] = "silu"
 
+    routable_args: Optional[RoutableArgs] = None
+
+    @property
+    def is_routed(self) -> bool:
+        return self.routable_args is not None
+
     def __post_init__(self):
         if self.n_local_heads == -1:
             self.n_local_heads = self.n_head
@@ -57,7 +85,7 @@ class ModelArgs:
     @classmethod
     def from_name(cls, name: str):
         if name in transformer_configs:
-            return cls(**transformer_configs[name])
+            return transformer_configs[name]
         # fuzzy search
         config = [
             config
@@ -73,7 +101,7 @@ class ModelArgs:
                 name
             )  # make sure only one 'best' match
 
-        return cls(**transformer_configs[config[0]])
+        return transformer_configs[config[0]]
 
     def make_norm(self, dim=None):
         dim = dim or self.dim
@@ -86,13 +114,13 @@ class ModelArgs:
 
 
 transformer_configs = {
-    "CodeLlama-7b-Python-hf": dict(
+    "CodeLlama-7b-Python-hf": ModelArgs(
         block_size=16384, vocab_size=32000, n_layer=32, dim=4096, rope_base=1000000
     ),
-    "7B": dict(n_layer=32, n_head=32, dim=4096),
-    "13B": dict(n_layer=40, n_head=40, dim=5120),
-    "30B": dict(n_layer=60, n_head=52, dim=6656),
-    "34B": dict(
+    "7B": ModelArgs(n_layer=32, n_head=32, dim=4096),
+    "13B": ModelArgs(n_layer=40, n_head=40, dim=5120),
+    "30B": ModelArgs(n_layer=60, n_head=52, dim=6656),
+    "34B": ModelArgs(
         n_layer=48,
         n_head=64,
         dim=8192,
@@ -101,10 +129,10 @@ transformer_configs = {
         intermediate_size=22016,
         rope_base=1000000,
     ),  # CodeLlama-34B-Python-hf
-    "70B": dict(
+    "70B": ModelArgs(
         n_layer=80, n_head=64, dim=8192, n_local_heads=8, intermediate_size=28672
     ),
-    "Mistral-7B": dict(
+    "Mistral-7B": ModelArgs(
         n_layer=32,
         n_head=32,
         n_local_heads=8,
@@ -112,9 +140,9 @@ transformer_configs = {
         intermediate_size=14336,
         vocab_size=32000,
     ),
-    "stories15M": dict(n_layer=6, n_head=6, dim=288),
-    "stories110M": dict(n_layer=12, n_head=12, dim=768),
-    "starcoder2-3b": dict(
+    "stories15M": ModelArgs(n_layer=6, n_head=6, dim=288),
+    "stories110M": ModelArgs(n_layer=12, n_head=12, dim=768),
+    "starcoder2-3b": ModelArgs(
         block_size=16384,
         n_layer=30,
         n_head=24,
@@ -130,7 +158,7 @@ transformer_configs = {
         attn_bias=True,
         act_fn="gelu_approx",
     ),
-    "llama-3.2-1b": dict(
+    "llama-3.2-1b": ModelArgs(
         block_size=131072,
         n_layer=16,
         n_head=32,
@@ -147,7 +175,7 @@ transformer_configs = {
         ),
         tie_embedding_weights=True,
     ),
-    "llama-3-8b": dict(
+    "llama-3-8b": ModelArgs(
         block_size=8192,
         n_layer=32,
         n_head=32,
@@ -157,7 +185,7 @@ transformer_configs = {
         vocab_size=128256,
         rope_base=500000,
     ),
-    "llama-3-70b": dict(
+    "llama-3-70b": ModelArgs(
         block_size=8192,
         n_layer=80,
         n_head=64,
@@ -167,7 +195,7 @@ transformer_configs = {
         vocab_size=128256,
         rope_base=500000,
     ),
-    "llama-3.1-8b": dict(
+    "llama-3.1-8b": ModelArgs(
         block_size=131072,
         n_layer=32,
         n_head=32,
@@ -183,7 +211,7 @@ transformer_configs = {
             original_max_position_embeddings=8192,
         ),
     ),
-    "llama-3.1-70b": dict(
+    "llama-3.1-70b": ModelArgs(
         block_size=131072,
         n_layer=80,
         n_head=64,
@@ -199,7 +227,7 @@ transformer_configs = {
             original_max_position_embeddings=8192,
         ),
     ),
-    "llama-3.1-405b": dict(
+    "llama-3.1-405b": ModelArgs(
         block_size=131072,
         n_layer=126,
         n_head=128,
@@ -266,10 +294,17 @@ class Transformer(nn.Module):
         self.max_seqlen = -1
         self.offset_mask_mod = offset_mask_mod
 
+        self.router: Optional[nn.Linear] = None
+        if config.is_routed:
+            self.router = nn.Linear(config.dim, config.routable_args.num_experts)
+        else:
+            self.expert_mask: Optional[Tensor] = None
+
     def clear_caches(self):
         self.freqs_cis = None
         self.max_batch_size = -1
         self.max_seqlen = -1
+        self.expert_mask = None
         for b in self.layers:
             b.attention.kv_cache = None
 
@@ -302,19 +337,56 @@ class Transformer(nn.Module):
             self.config.rope_scaling,
         )
 
+        if self.config.is_routed:
+            self.register_buffer(
+                "expert_mask",
+                torch.zeros((max_batch_size, self.config.routable_args.total_expert_rank), dtype=dtype),
+                persistent=False,
+            )
+
     def forward(
         self,
         mask: BlockMask,
         idx: Tensor,
         input_pos: Tensor,
+        is_prefill: bool = False,
     ) -> Tensor:
         assert self.freqs_cis is not None, "Caches must be initialized first"
         freqs_cis = self.freqs_cis[input_pos]
         x = self.tok_embeddings(idx)
 
+        if is_prefill and self.config.is_routed:
+            rargs = self.config.routable_args
+            if rargs.prefill_expert:
+                self.expert_mask[:, : rargs.prefill_expert_size] = 1.0
+                self.expert_mask[:, rargs.prefill_expert_size :] = 0.0
+            else:
+                self.expert_mask[:] = 0.0
+
         for i, layer in enumerate(self.layers):
-            x = layer(x, freqs_cis, mask, input_pos)
+            x = layer(x, freqs_cis, mask, input_pos, self.expert_mask)
         x = self.norm(x)
+
+        if is_prefill and self.config.is_routed:
+            if rargs.ident_expert_mask:
+                self.expert_mask.fill_(1.0)
+            else:
+                rargs = self.config.routable_args
+                router_input = x[:, -1]
+                router_logits = self.router(router_input)
+                if rargs.router_act_before_topk:
+                    router_probs = F.softmax(router_logits, dim=-1)
+                    router_probs = keep_topk(router_probs, rargs.top_k)
+                else:
+                    router_logits = keep_topk(router_logits, rargs.top_k)
+                    router_probs = F.softmax(router_logits, dim=-1)
+                mask_probs = expand_router_probs(router_probs, rargs.expert_rank)
+                if rargs.prefill_expert:
+                    self.expert_mask[:, : rargs.prefill_expert_size] = 0.0
+                    self.expert_mask[:, rargs.prefill_expert_size :] = mask_probs
+                else:
+                    self.expert_mask[:] = mask_probs
+
         logits = self.output(x)
         return logits
 
@@ -330,6 +402,9 @@ class TransformerBlock(nn.Module):
         self.feed_forward = FeedForward(config)
         self.ffn_norm = config.make_norm()
         self.attention_norm = config.make_norm()
+        self.routed_experts: Optional[RoutableExperts] = None
+        if config.is_routed:
+            self.routed_experts = RoutableExperts(config)
 
     def forward(
         self,
@@ -337,9 +412,13 @@ class TransformerBlock(nn.Module):
         freqs_cis: Tensor,
         mask: BlockMask,
         input_pos: Tensor,
+        expert_mask: Optional[Tensor] = None,
     ) -> Tensor:
         h = x + self.attention(self.attention_norm(x), freqs_cis, mask, input_pos)
-        out = h + self.feed_forward(self.ffn_norm(h))
+        ffn_input = self.ffn_norm(h)
+        out = h + self.feed_forward(ffn_input)
+        if self.routed_experts and expert_mask is not None:
+            out += self.routed_experts(ffn_input, expert_mask)
         return out
 
 
@@ -420,6 +499,28 @@ class FeedForward(nn.Module):
         out = self.act(self.w1(x))
         if self.w3:
             out *= self.w3(x)
+        return self.w2(out)
+
+
+class RoutableExperts(nn.Module):
+    def __init__(self, config: ModelArgs) -> None:
+        super().__init__()
+        rargs = config.routable_args
+        self.w1 = nn.Linear(config.dim, rargs.total_expert_rank, bias=False)
+        if config.glu:
+            self.w3 = nn.Linear(config.dim, rargs.total_expert_rank, bias=False)
+        else:
+            self.w3 = None
+        self.w2 = nn.Linear(rargs.total_expert_rank, config.dim, bias=False)
+        self.act = (
+            F.silu if config.act_fn == "silu" else partial(F.gelu, approximate="tanh")
+        )
+
+    def forward(self, x: Tensor, expert_mask: torch.Tensor) -> Tensor:
+        out = self.act(self.w1(x))
+        if self.w3:
+            out *= self.w3(x)
+        out *= expert_mask
         return self.w2(out)
 
 

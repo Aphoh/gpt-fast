@@ -112,7 +112,7 @@ def prefill(
 ) -> torch.Tensor:
     # x: [B, S]
     # input_pos: [B, S]
-    logits = model(prefill_mask, x, input_pos)
+    logits = model(prefill_mask, x, input_pos, is_prefill=True)
     if return_logits:
         return logits
     b_inds = torch.arange(x.shape[0], device=x.device)
@@ -135,6 +135,7 @@ def decode_one_token(
         gen_mask_i,
         cur_token.unsqueeze(-1),
         input_pos=input_pos.unsqueeze(-1),
+        is_prefill=False,
     )
     if return_logits:
         return logits
