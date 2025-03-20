@@ -83,6 +83,7 @@ def tokenize_and_pad(
     pad_to_multiple: int = 256,
     truncation: Literal["left", "right"] = "left",
     min_new_tokens: int = 1,
+    trim_tokens_right: int = 0,
 ) -> PaddedOutput:
     """
     Tokenizes a list of texts and pads them to the same length.
@@ -111,6 +112,8 @@ def tokenize_and_pad(
         tensors = [t[-trim_len:] for t in tensors]
     else:
         tensors = [t[:trim_len] for t in tensors]
+    if trim_tokens_right > 0:
+        tensors = [t[:-trim_tokens_right] for t in tensors]
     # keep track of how much padding was added to the left of each sequence
     seqlens = torch.tensor([len(t) for t in tensors])
     padded = torch.nn.utils.rnn.pad_sequence(

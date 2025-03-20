@@ -156,7 +156,10 @@ def check_decode_consistent(tformer: Transformer, **kwargs):
     # Now test individual token decoding against prefill outputs
     offsets = seqlens.clone()
     for i in range(PREFILL_S, GEN_S):
-        gen_mask_i = get_gen_mask(offsets=offsets, max_seqlen=GEN_S, BLOCK_SIZE=8)
+        stop_map = torch.zeros(B, dtype=torch.bool)
+        gen_mask_i = get_gen_mask(
+            offsets=offsets, stop_map=stop_map, max_seqlen=GEN_S, BLOCK_SIZE=8
+        )
         b_inds = torch.arange(B)
         cur_token = input_ids[b_inds, offsets]
         next_token_logits = decode_one_token(

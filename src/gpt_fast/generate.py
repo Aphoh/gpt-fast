@@ -205,6 +205,7 @@ def generate(
     *,
     device: torch.device,
     compile: bool,
+    first_token_constraint: Optional[int] = None,
     sampling: SamplingConfig = SamplingConfig(),
     stopping_condition: Optional[StoppingCondition] = None,
 ) -> torch.Tensor:
@@ -213,6 +214,7 @@ def generate(
     seqlens: [B] end index of the unpadded input of each batch
     max_seqlen: int maximum sequence length
     max_new_tokens: int maximum number of new tokens to generate
+    first_token_constaint: constraint the first generated token to be this specific value
 
     Returns output_ids: [B, new_tokens] batch of generated tokens.
         Each output value ocurring after the stopping condition is hit has a value of -1.
@@ -254,6 +256,8 @@ def generate(
     ).clone()
     b_inds = torch.arange(B, device=device)
     # This is safe since seqlens < max_seqlen
+    if first_token_constraint is not None:
+        next_token[:] = first_token_constraint
     output_ids[b_inds, seqlens] = next_token.squeeze(1)
 
     gen_input_pos = seqlens.clone()
@@ -278,8 +282,11 @@ def generate(
     return output_ids
 
 
-def _load_model(checkpoint_path, routable_path, device, precision, use_tp):
+def _load_model(
+    checkpoint_path, routable_path, device, precision, use_tp
+) -> tuple[Transformer, Optional[RoutableCfg]]:
     args: ModelArgs
+    rcfg: Optional[RoutableCfg] = None
     if routable_path is not None:
         with open(routable_path) as f:
             config_dict = json.load(f)
@@ -304,7 +311,7 @@ def _load_model(checkpoint_path, routable_path, device, precision, use_tp):
         apply_tp(model)
 
     model = model.to(device=device, dtype=precision)
-    return model.eval()
+    return model.eval(), rcfg
 
 
 def main(
@@ -316,6 +323,7 @@ def main(
     sampling: SamplingConfig,
     checkpoint_path: Path,
     routable_path: Optional[Path],
+    route_before_fim_middle: bool,
     compile: bool,
     device: torch.device,
 ) -> None:
@@ -346,7 +354,7 @@ def main(
 
     print("Loading model ...")
     t0 = time.time()
-    model = _load_model(checkpoint_path, routable_path, device, precision, use_tp)
+    model, rcfg = _load_model(checkpoint_path, routable_path, device, precision, use_tp)
 
     device_sync(device=device)  # MKG
     print(f"Time to load model: {time.time() - t0:.02f} seconds")
@@ -364,6 +372,11 @@ def main(
 
     with device:
         model.setup_caches(max_batch_size=batch_size, max_seqlen=max_seqlen)
+
+    first_token_constraint: Optional[int] = None
+    if route_before_fim_middle:
+        assert rcfg is not None
+        first_token_constraint = tokenizer.encode(rcfg.fim_middle_token)[0]
 
     with open(output_file, "a") as f:
         for batch in tqdm(input_iterator, desc="Generating"):
@@ -386,7 +399,11 @@ def main(
                 )
             device_sync(device=device)
             encoded = tokenize_and_pad(
-                batch.texts, tokenizer, max_seqlen, min_new_tokens=1
+                batch.texts,
+                tokenizer,
+                max_seqlen,
+                min_new_tokens=1,
+                trim_tokens_right=1 if route_before_fim_middle else 0,
             )
             output = generate(
                 model=model,
@@ -398,6 +415,7 @@ def main(
                 compile=compile,
                 sampling=sampling,
                 stopping_condition=stopping_condition,
+                first_token_constraint=first_token_constraint,
             )
 
             if n_trim != 0:
@@ -469,6 +487,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--device", type=str, default=default_device, help="Device to use"
     )
+    parser.add_argument(
+        "-R",
+        "--route_before_fim_middle",
+        action="store_true",
+        help="Route before the <fim_middle> token so the first new token is using the routing",
+    )
     args = parser.parse_args()
 
     input_file: Path = args.input_file
@@ -481,6 +505,7 @@ if __name__ == "__main__":
     checkpoint_path: Path = args.checkpoint_path
     routable_path: Optional[Path] = args.routable_path
     device: torch.device = torch.device(args.device)
+    route_before_fim_middle: bool = args.route_before_fim_middle
     compile: bool = args.compile
     sampling = SamplingConfig(top_k=top_k, top_p=args.top_p, temperature=temperature)
 
@@ -495,5 +520,6 @@ if __name__ == "__main__":
         compile=compile,
         checkpoint_path=checkpoint_path,
         routable_path=routable_path,
+        route_before_fim_middle=route_before_fim_middle,
         device=device,
     )

@@ -32,7 +32,12 @@ def test_gen_mask():
     B, H, S, D = q.shape
     ref_output = scaled_dot_product_attention(q, k, v, is_causal=True, enable_gqa=True)
     offsets = torch.randint(1, S - 1, (B,), device=device, dtype=torch.int)
-    mask = get_gen_mask(offsets, S, BLOCK_SIZE=S // 8)
+    mask = get_gen_mask(
+        offsets,
+        S,
+        torch.zeros(B, dtype=torch.bool, device=device),
+        BLOCK_SIZE=S // 8,
+    )
     reference_mask = create_block_mask(
         offset_mask_mod(offsets), B, 1, 1, S, BLOCK_SIZE=S // 4, device=device
     )
