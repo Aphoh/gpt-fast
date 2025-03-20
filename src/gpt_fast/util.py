@@ -1,8 +1,10 @@
 import functools
 import itertools
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union
 import torch
 from torch import Tensor
+from safetensors.torch import load_file as safetensors_load_file
 from torch.nn.attention.flex_attention import (
     flex_attention,
     BlockMask,
@@ -11,11 +13,23 @@ from torch.nn.attention.flex_attention import (
 
 
 def load_model(
-    model, checkpoint_path: str, precision: torch.dtype, device: torch.device
+    model,
+    checkpoint_path: str,
+    routable_path: Optional[Path],
+    precision: torch.dtype,
+    device: torch.device,
 ):
     checkpoint = torch.load(str(checkpoint_path), mmap=True, weights_only=True)
     if model.config.tie_embedding_weights:
         checkpoint["output.weight"] = checkpoint["tok_embeddings.weight"]
+
+    if routable_path is not None:
+        from gpt_fast.ckpt_utils import convert_routable_state_dict
+
+        routable_ckpt_path = routable_path.with_suffix(".safetensors")
+        rstate_dict = safetensors_load_file(str(routable_ckpt_path))
+        checkpoint |= convert_routable_state_dict(model.config, rstate_dict)
+
     model.load_state_dict(checkpoint, assign=True)
     model = model.to(dtype=precision, device=device)
     return model

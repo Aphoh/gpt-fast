@@ -296,7 +296,9 @@ class Transformer(nn.Module):
 
         self.router: Optional[nn.Linear] = None
         if config.is_routed:
-            self.router = nn.Linear(config.dim, config.routable_args.num_experts)
+            self.router = nn.Linear(
+                config.dim, config.routable_args.num_experts, bias=False
+            )
         else:
             self.expert_mask: Optional[Tensor] = None
 
@@ -523,7 +525,7 @@ class RoutableExperts(nn.Module):
         out = self.act(self.w1(x))
         if self.w3:
             out *= self.w3(x)
-        out *= expert_mask
+        out *= expert_mask[:, None]
         return self.w2(out)
 
 

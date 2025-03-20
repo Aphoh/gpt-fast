@@ -9,6 +9,7 @@ import torch
 class RoutableCfg:
     args: RoutableArgs
     base_model: str
+    fim_middle_token: str
 
 
 def permute(w, n_head, head_dim, dim):
@@ -21,6 +22,39 @@ def permute(w, n_head, head_dim, dim):
 
 def permute_bias(b, n_head, head_dim):
     return b.view(n_head, 2, head_dim // 2).transpose(1, 2).reshape(head_dim * n_head)
+
+
+def convert_routable_state_dict(
+    config: ModelArgs, state_dict: Dict[str, torch.Tensor]
+) -> Dict[str, torch.Tensor]:
+    rargs = config.routable_args
+    if rargs.disable_expert_mask:
+        raise ValueError("TODO: full ft baseline")
+
+    if any("lora" in k for k in state_dict.keys()):
+        raise ValueError("TODO: lora")
+
+    final_result = {}
+    for layer_idx in range(config.n_layer):
+        from_prefix = f"model.layers.{layer_idx}.mlp.experts"
+        to_prefix = f"layers.{layer_idx}.routed_experts"
+        final_result[f"{to_prefix}.w1.weight"] = state_dict[
+            f"{from_prefix}.up_proj.weight"
+        ]
+        final_result[f"{to_prefix}.w2.weight"] = state_dict[
+            f"{from_prefix}.down_proj.weight"
+        ]
+        if config.glu:
+            final_result[f"{to_prefix}.w3.weight"] = state_dict[
+                f"{from_prefix}.gate_proj.weight"
+            ]
+    if rargs.prefill_expert:
+        topk = rargs.top_k
+        r_weight = state_dict["router.weight"]
+        final_result["router.weight"] = r_weight[topk:]  # remove prefill expert weights
+    else:
+        final_result["router.weight"] = state_dict["router.weight"]
+    return final_result
 
 
 def convert_state_dict(config: ModelArgs, state_dict: Dict[str, torch.Tensor]):

@@ -4,7 +4,9 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 from dataclasses import dataclass
+import dataclasses
 from functools import partial
+import json
 import time
 from pathlib import Path
 from typing import Optional
@@ -15,6 +17,7 @@ import torch._inductor.config
 from torch.nn.attention.flex_attention import BlockMask
 from tqdm import tqdm
 
+from gpt_fast.ckpt_utils import RoutableCfg
 from gpt_fast.inputs import Batch, read_ids, read_input_batches, write_outputs
 from gpt_fast.stopping import (
     StoppingCondition,
@@ -23,7 +26,7 @@ from gpt_fast.stopping import (
     ignore_batch_inds,
 )
 from gpt_fast.util import load_model, maybe_compile
-from gpt_fast.model import Transformer
+from gpt_fast.model import ModelArgs, RoutableArgs, Transformer
 from gpt_fast.tokenizer import detokenize_output_ids, get_tokenizer, tokenize_and_pad
 from gpt_fast.mask_utils import (
     make_prefill_mask,
@@ -180,9 +183,9 @@ def decode_n_tokens(
             compile=compile,
         )
         input_pos += 1
+        cur_token = next_token[:, 0].clone()
         next_token[stop_map, 0] = -1
         new_tokens.append(next_token.clone())
-        cur_token = next_token[:, 0].clone()
         if stopping_condition is not None:
             stop_map |= stopping_condition(torch.hstack(new_tokens))
             pbar.set_description(f"generating {stop_map.sum().item()}/{len(stop_map)}")
@@ -275,11 +278,24 @@ def generate(
     return output_ids
 
 
-def _load_model(checkpoint_path, device, precision, use_tp):
-    with torch.device("meta"):
-        model = Transformer.from_name(checkpoint_path.parent.name)
+def _load_model(checkpoint_path, routable_path, device, precision, use_tp):
+    args: ModelArgs
+    if routable_path is not None:
+        with open(routable_path) as f:
+            config_dict = json.load(f)
+            rargs = RoutableArgs(**config_dict.pop("args"))
+            rcfg = RoutableCfg(args=rargs, **config_dict)
+            args = ModelArgs.from_name(rcfg.base_model)
+            args = dataclasses.replace(args, routable_args=rargs)
+    else:
+        args = ModelArgs.from_name(checkpoint_path.parent.name)
 
-    model = load_model(model, checkpoint_path, precision=precision, device=device)
+    with torch.device("meta"):
+        model = Transformer(args)
+
+    model = load_model(
+        model, checkpoint_path, routable_path, precision=precision, device=device
+    )
 
     if use_tp:
         from gpt_fast.tp import apply_tp
@@ -299,6 +315,7 @@ def main(
     batch_size: int,
     sampling: SamplingConfig,
     checkpoint_path: Path,
+    routable_path: Optional[Path],
     compile: bool,
     device: torch.device,
 ) -> None:
@@ -329,7 +346,7 @@ def main(
 
     print("Loading model ...")
     t0 = time.time()
-    model = _load_model(checkpoint_path, device, precision, use_tp)
+    model = _load_model(checkpoint_path, routable_path, device, precision, use_tp)
 
     device_sync(device=device)  # MKG
     print(f"Time to load model: {time.time() - t0:.02f} seconds")
@@ -437,6 +454,12 @@ if __name__ == "__main__":
         help="Model checkpoint path.",
     )
     parser.add_argument(
+        "-r",
+        "--routable_path",
+        type=Path,
+        help="Model routable config path.",
+    )
+    parser.add_argument(
         "-n",
         "--no_compile",
         action="store_false",
@@ -456,6 +479,7 @@ if __name__ == "__main__":
     top_k: int = args.top_k
     temperature: float = args.temperature
     checkpoint_path: Path = args.checkpoint_path
+    routable_path: Optional[Path] = args.routable_path
     device: torch.device = torch.device(args.device)
     compile: bool = args.compile
     sampling = SamplingConfig(top_k=top_k, top_p=args.top_p, temperature=temperature)
@@ -470,5 +494,6 @@ if __name__ == "__main__":
         sampling=sampling,
         compile=compile,
         checkpoint_path=checkpoint_path,
+        routable_path=routable_path,
         device=device,
     )

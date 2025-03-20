@@ -14,19 +14,6 @@ from gpt_fast.model import RoutableArgs
 import argparse
 
 
-{
-    "phlnhomq": "routed_mlp",
-    "mu2k6eua": "mlp_baseline",
-    "ovnrxkig": "lora_baseline",
-    "ztayrajx": "routed_lbl",
-    "cva5mmcs": "routed_lflb",
-    "tf7x5r5t": "routed_lflb_and_lbl",
-    "uant2b5v": "full_ft_baseline",
-    "mnzg3v6b": "routed_lbl_topk_2",
-    "csmojau2": "routed_lflb_topk_2",
-}
-
-
 def download_safetensors_from_gcs(
     wandb_id: str, gcs_path: str, output_path: Path
 ) -> str:
@@ -60,8 +47,6 @@ def pull_config_from_wandb(
     api: wandb.Api, wandb_proj: str, wandb_id: str
 ) -> RoutableCfg:
     run = api.run(f"{wandb_proj}/{wandb_id}")
-    breakpoint()
-    print(run.command)
     mcfg = run.config["model"]
     routable_args = RoutableArgs(
         num_experts=mcfg["num_experts"],
@@ -75,8 +60,11 @@ def pull_config_from_wandb(
         router_activation=mcfg["router_activation"],
         router_act_before_topk=mcfg["router_act_before_topk"],
     )
+    middle_token = run.config["data"]["middle_token"]
     rconfig = RoutableCfg(
-        args=routable_args, base_model=run.config["initialize_from_hf"]
+        args=routable_args,
+        base_model=run.config["initialize_from_hf"],
+        fim_middle_token=middle_token,
     )
     return rconfig
 
