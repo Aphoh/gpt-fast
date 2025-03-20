@@ -94,7 +94,9 @@ def check_prefill_consistent(ref_model, tformer, **kwargs):
     ref_output = ref_model(input_ids=prefill_input_ids, attention_mask=attn_mask).logits
 
     tformer.setup_caches(B, GEN_S)
-    prefill_mask = make_prefill_mask(seqlens, prefill_input_ids.shape[1], GEN_S, compile=False)
+    prefill_mask = make_prefill_mask(
+        seqlens, prefill_input_ids.shape[1], GEN_S, compile=False
+    )
     our_output = prefill(
         tformer,
         x=prefill_input_ids,
@@ -139,7 +141,9 @@ def check_decode_consistent(tformer: Transformer, **kwargs):
     tformer.clear_caches()
     tformer.setup_caches(B, GEN_S)
     # Prefill the sequence to populate kv caches
-    prefill_mask = make_prefill_mask(seqlens, prefill_input_ids.shape[1], GEN_S, compile=False)
+    prefill_mask = make_prefill_mask(
+        seqlens, prefill_input_ids.shape[1], GEN_S, compile=False
+    )
     prefill(
         tformer,
         x=prefill_input_ids,  # Use full sequence for prefill reference

@@ -1,7 +1,14 @@
+import dataclasses
 import re
 from typing import Dict
-from .model import ModelArgs
+from .model import ModelArgs, RoutableArgs
 import torch
+
+
+@dataclasses.dataclass
+class RoutableCfg:
+    args: RoutableArgs
+    base_model: str
 
 
 def permute(w, n_head, head_dim, dim):

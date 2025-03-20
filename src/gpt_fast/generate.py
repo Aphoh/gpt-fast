@@ -42,6 +42,7 @@ def device_sync(device: torch.device) -> None:
 
 default_device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
+
 @dataclass(frozen=True)
 class SamplingConfig:
     top_k: Optional[int] = None
@@ -56,46 +57,53 @@ def multinomial_sample_one_no_sync(
     return torch.argmax(probs_sort / q, dim=-1, keepdim=True).to(dtype=torch.int)
 
 
-def logits_to_probs(logits, temperature: float = 1.0, top_k: Optional[int] = None, top_p: Optional[float] = None):
+def logits_to_probs(
+    logits,
+    temperature: float = 1.0,
+    top_k: Optional[int] = None,
+    top_p: Optional[float] = None,
+):
     logits = logits / max(temperature, 1e-5)
 
     if top_k is not None:
         v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
         pivot = v.select(-1, -1).unsqueeze(-1)
         logits = torch.where(logits < pivot, -float("Inf"), logits)
-    
+
     probs = torch.nn.functional.softmax(logits, dim=-1)
-    
+
     if top_p is not None and top_p < 1.0:
         # Sort probabilities in descending order
         sorted_probs, sorted_indices = torch.sort(probs, dim=-1, descending=True)
-        
+
         # Calculate cumulative probabilities
         cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
-        
+
         # Find tokens to keep (cumulative prob <= p)
         sorted_mask = cumulative_probs <= top_p
-        
+
         # Always keep the highest probability token
         sorted_mask[..., 0] = True
-        
+
         # Create a mask of tokens to keep in the original order
         mask_to_keep = torch.zeros_like(probs, dtype=torch.bool)
-        
+
         # Use scatter to apply the mask without loops
         mask_to_keep.scatter_(-1, sorted_indices, sorted_mask)
-        
+
         # Apply the mask
         probs = probs * mask_to_keep.float()
-        
+
         # Renormalize
         probs = probs / probs.sum(dim=-1, keepdim=True).clamp(min=1e-10)
-    
+
     return probs
 
 
 def sample(logits, config: SamplingConfig):
-    probs = logits_to_probs(logits[:, -1], config.temperature, config.top_k, config.top_p)
+    probs = logits_to_probs(
+        logits[:, -1], config.temperature, config.top_k, config.top_p
+    )
     idx_next = multinomial_sample_one_no_sync(probs)
     return idx_next, probs
 
@@ -160,14 +168,14 @@ def decode_n_tokens(
     """
     assert cur_token.shape == input_pos.shape
     new_tokens = []
-    stop_map = torch.zeros(cur_token.shape, dtype=torch.bool, device=cur_token.device)
+    stop_map = input_pos >= max_seqlen
     for i in (pbar := tqdm(range(max_new_tokens), desc="generating", leave=False)):
-        gen_mask_i = get_gen_mask(input_pos, max_seqlen)
+        gen_mask_i = get_gen_mask(input_pos, max_seqlen, stop_map)
         next_token = decode_one_token(
             gen_mask_i=gen_mask_i,
             model=model,
             cur_token=cur_token,
-            input_pos=input_pos,
+            input_pos=input_pos.clamp(max=max_seqlen - 1),
             sampling=sampling,
             compile=compile,
         )
@@ -210,15 +218,15 @@ def generate(
     B, S = input_ids.shape
 
     input_ids = input_ids.to(device=device, dtype=torch.int).clamp(min=0)
-    seqlens = seqlens.to(device=device, dtype=torch.int)
+    seqlens = seqlens.to(device=device, dtype=torch.int).clamp(
+        max=max_seqlen - 1
+    )  # need at least one token to predict
 
-    # This does mean the batching could cut stuff off if any prompt is too long, but let's just ignore that xD
-    if S + max_new_tokens > max_seqlen:
-        raise ValueError(
-            f"Input sequence length {S} + max_new_tokens {max_new_tokens} >= max_seqlen {max_seqlen}"
-        )
+    assert S <= max_seqlen, f"{S} > {max_seqlen}"
+    assert seqlens.max() < max_seqlen, f"{seqlens.max()} >= {max_seqlen}"
 
-    output_ids = -torch.ones(B, S + max_new_tokens, device=device, dtype=torch.int)
+    output_len = min(S + max_new_tokens, max_seqlen)
+    output_ids = -torch.ones(B, output_len, device=device, dtype=torch.int)
     output_ids[:, :S] = input_ids
     prefill_input_pos = torch.arange(S, device=device, dtype=torch.int)[None, :].expand(
         B, S
@@ -242,6 +250,7 @@ def generate(
         compile=compile,
     ).clone()
     b_inds = torch.arange(B, device=device)
+    # This is safe since seqlens < max_seqlen
     output_ids[b_inds, seqlens] = next_token.squeeze(1)
 
     gen_input_pos = seqlens.clone()
@@ -259,8 +268,9 @@ def generate(
     )
     num_new_tokens = next_tokens.shape[1]
     for b in range(B):
-        end_idx = seqlens[b] + 1 + num_new_tokens
-        output_ids[b, seqlens[b] + 1 : end_idx] = next_tokens[b]
+        start_idx = seqlens[b] + 1
+        end_idx = min(seqlens[b] + 1 + num_new_tokens, max_seqlen)
+        output_ids[b, start_idx:end_idx] = next_tokens[b, : end_idx - start_idx]
 
     return output_ids
 
@@ -358,7 +368,9 @@ def main(
                     ),
                 )
             device_sync(device=device)
-            encoded = tokenize_and_pad(batch.texts, tokenizer, max_seqlen)
+            encoded = tokenize_and_pad(
+                batch.texts, tokenizer, max_seqlen, min_new_tokens=1
+            )
             output = generate(
                 model=model,
                 input_ids=encoded.padded,
@@ -409,9 +421,11 @@ if __name__ == "__main__":
         "--batch_size", type=int, default=4, help="Batch size to run with"
     )
     parser.add_argument("--top_k", type=int, default=200, help="Top-k for sampling.")
-        # Add this to the argument parser section
-    parser.add_argument("--top_p", type=float, default=None, help="Top-p (nucleus) sampling threshold.")
-    
+    # Add this to the argument parser section
+    parser.add_argument(
+        "--top_p", type=float, default=None, help="Top-p (nucleus) sampling threshold."
+    )
+
     parser.add_argument(
         "--temperature", type=float, default=1.0, help="Temperature for sampling."
     )

@@ -340,7 +340,10 @@ class Transformer(nn.Module):
         if self.config.is_routed:
             self.register_buffer(
                 "expert_mask",
-                torch.zeros((max_batch_size, self.config.routable_args.total_expert_rank), dtype=dtype),
+                torch.zeros(
+                    (max_batch_size, self.config.routable_args.total_expert_rank),
+                    dtype=dtype,
+                ),
                 persistent=False,
             )
 

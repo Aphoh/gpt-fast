@@ -184,6 +184,7 @@ def keep_topk(
     mask.scatter_(dim, indices, True)
     return mask * logits
 
+
 def expand_router_probs(probs: torch.Tensor, rank: int) -> torch.Tensor:
     """
     Expand the probabilities of a router to rank `rank`

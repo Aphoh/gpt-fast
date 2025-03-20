@@ -2,7 +2,6 @@ from gpt_fast.mask_utils import offset_mask_mod, make_prefill_mask, get_gen_mask
 import torch
 from torch.nn.attention.flex_attention import flex_attention, create_block_mask
 from torch.nn.functional import scaled_dot_product_attention
-from tests.test_generate import skip_if_no_cuda
 from utils import assert_close
 
 
@@ -46,12 +45,12 @@ def test_gen_mask():
         v_mask[b, :, j + 1 :] = 1e-9
         q_mask[b, :, 0] = q[b, :, j]
 
-    output1 = flex_attention(q_mask, k_mask, v_mask, block_mask=reference_mask, enable_gqa=True)
+    output1 = flex_attention(
+        q_mask, k_mask, v_mask, block_mask=reference_mask, enable_gqa=True
+    )
     output2 = flex_attention(q_mask, k_mask, v_mask, block_mask=mask, enable_gqa=True)
 
     for i in range(B):
         j = offsets[i]
         assert_close(output1[i], ref_output[i, :, j : j + 1])
         assert_close(output2[i], ref_output[i, :, j : j + 1])
-
-

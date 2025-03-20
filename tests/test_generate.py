@@ -74,6 +74,37 @@ def test_llama_decode():
 
 
 @torch.inference_mode()
+def test_generate_long_seqlen(small_model: Transformer):
+    torch.random.manual_seed(42)
+    B = 2
+    S = 32
+    max_new_tokens = 16
+    seqlens = torch.tensor([16, 31])
+    input_ids = torch.randint(0, small_model.config.vocab_size, (B, S))
+    input_ids[0, 16:] = -1
+    # one very long sequence near the max length
+    # one shorter sequence
+    small_model.setup_caches(B, S)
+    output = generate(
+        small_model,
+        input_ids=input_ids,
+        seqlens=seqlens,
+        max_seqlen=S,
+        max_new_tokens=max_new_tokens,
+        device=input_ids.device,
+        compile=False,
+        sampling=SamplingConfig(top_k=None, temperature=0.0),
+    )
+    assert output.shape == (B, S)
+    # the first sequence should have new tokens
+    assert (output[0, 16:] != -1).all()
+    # the first sequence should be unchanged other than the later tokens
+    assert (output[0, :16] == input_ids[0, :16]).all()
+    # the second sequence should be unchanged other than the last token
+    assert (output[1, :-1] == input_ids[1, :-1]).all()
+
+
+@torch.inference_mode()
 def test_decode_consistency(
     small_model: Transformer,
     reference_model: LlamaForCausalLM,

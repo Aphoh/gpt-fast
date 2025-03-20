@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List
+from typing import List, Literal
 from tokenizers import Tokenizer, Encoding
 from pathlib import Path
 
@@ -81,6 +81,8 @@ def tokenize_and_pad(
     tokenizer: TokenizerInterface,
     max_length: int,
     pad_to_multiple: int = 256,
+    truncation: Literal["left", "right"] = "left",
+    min_new_tokens: int = 1,
 ) -> PaddedOutput:
     """
     Tokenizes a list of texts and pads them to the same length.
@@ -100,7 +102,15 @@ def tokenize_and_pad(
     longest_seq = max(len(t) for t in tensors)
     final_len = min(_round_to_multiple(longest_seq, pad_to_multiple), max_length)
     # Pad sequences to the same length
-    tensors = [t[:final_len] for t in tensors]
+    # trimming off the left side of the sequence if it's longer than final_len
+    trim_len = final_len
+    # If we're at the max length, make sure we trim off some extra tokens for generation
+    if final_len == max_length:
+        trim_len = max_length - min_new_tokens
+    if truncation == "left":
+        tensors = [t[-trim_len:] for t in tensors]
+    else:
+        tensors = [t[:trim_len] for t in tensors]
     # keep track of how much padding was added to the left of each sequence
     seqlens = torch.tensor([len(t) for t in tensors])
     padded = torch.nn.utils.rnn.pad_sequence(

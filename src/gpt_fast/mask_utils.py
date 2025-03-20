@@ -50,12 +50,14 @@ def make_prefill_mask(
 def get_gen_mask(
     offsets: torch.Tensor,
     max_seqlen: int,
+    stop_map: torch.Tensor,
     BLOCK_SIZE: int = 128,
 ) -> BlockMask:
     (B,) = offsets.shape
     max_blocks = max_seqlen // BLOCK_SIZE
     # we only have one non-full kv block during generation
     kv_num_blocks = (offsets // BLOCK_SIZE) + 1
+    kv_num_blocks *= ~stop_map
     # The block which offsets[i] is in is the only block that is not full
     kv_block_inds = torch.arange(
         max_blocks,
@@ -64,6 +66,7 @@ def get_gen_mask(
     )[None, :].expand(B, -1)
     # We have 1 less full kv block than the total number of blocks
     full_kv_blocks_num = kv_num_blocks - 1
+    full_kv_blocks_num *= ~stop_map
     # These are the same as the kv_block_inds, but without the last block
     full_kv_block_inds = kv_block_inds
     mask_mod = offset_mask_mod(offsets)

@@ -43,3 +43,26 @@ def test_tokenize_and_pad_basic():
 
     # Check actual content
     assert detokenize_output_ids(result.padded, tokenizer) == texts
+
+
+def test_tokenize_and_pad_near_maxseqlen():
+    tokenizer = MockTokenizer()
+    max_length = 128
+    texts = ["hello", "c" + ("a" * 127)]
+    result = tokenize_and_pad(
+        texts, tokenizer, max_length=max_length, pad_to_multiple=8, min_new_tokens=1
+    )
+
+    assert isinstance(result, PaddedOutput)
+    assert result.padded.shape[0] == len(texts)  # Batch size
+    assert result.padded.shape[1] == 128  # Padded to multiple of 8
+    assert result.seqlens.tolist() == [len("hello"), 127]
+
+    assert torch.all(result.padded[0, 5:] == -1)  # Padding on the right
+    assert torch.all(result.padded[1, :-1] != -1)  # All but the last aren't padding
+    assert torch.all(result.padded[:, -1] == -1)  # The last is padding
+
+    # Check actual content
+    detok = detokenize_output_ids(result.padded, tokenizer)
+    assert detok[0] == "hello"
+    assert detok[1] == ("a" * 127)
