@@ -362,11 +362,14 @@ class Transformer(nn.Module):
 
         if is_prefill and self.config.is_routed:
             rargs = self.config.routable_args
-            if rargs.prefill_expert:
-                self.expert_mask[:, : rargs.prefill_expert_size] = 1.0
-                self.expert_mask[:, rargs.prefill_expert_size :] = 0.0
+            if rargs.ident_expert_mask:
+                self.expert_mask.fill_(1.0)
             else:
-                self.expert_mask[:] = 0.0
+                if rargs.prefill_expert:
+                    self.expert_mask[:, : rargs.prefill_expert_size] = 1.0
+                    self.expert_mask[:, rargs.prefill_expert_size :] = 0.0
+                else:
+                    self.expert_mask[:] = 0.0
 
         for i, layer in enumerate(self.layers):
             x = layer(x, freqs_cis, mask, input_pos, self.expert_mask)

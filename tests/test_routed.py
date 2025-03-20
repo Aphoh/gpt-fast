@@ -68,3 +68,27 @@ def test_routed_prefill_experts():
     assert (
         model.expert_mask[:, : config.routable_args.prefill_expert_size] == 0.0
     ).all()
+
+
+def test_ident_expert_mask():
+    SEQ_LEN = 32
+    config = small_config(ident_expert_mask=True)
+    model = Transformer(config)
+    model.setup_caches(1, SEQ_LEN)
+
+    assert (model.expert_mask == 0.0).all()
+    inputs = torch.randint(0, config.vocab_size, (1, SEQ_LEN))
+    input_pos = torch.arange(SEQ_LEN).unsqueeze(0)
+    seqlens = torch.randint(1, SEQ_LEN, (1,))
+    prefill_mask = make_prefill_mask(
+        seqlens=seqlens, query_len=SEQ_LEN, max_seqlen=SEQ_LEN, compile=False
+    )
+    prefill(
+        model,
+        x=inputs,
+        input_pos=input_pos,
+        prefill_mask=prefill_mask,
+        seqlens=seqlens,
+        compile=False,
+    )
+    assert (model.expert_mask == 1.0).all()
