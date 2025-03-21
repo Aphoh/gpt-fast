@@ -293,7 +293,12 @@ def _load_model(
             rargs = RoutableArgs(**config_dict.pop("args"))
             rcfg = RoutableCfg(args=rargs, **config_dict)
             args = ModelArgs.from_name(rcfg.base_model)
-            args = dataclasses.replace(args, routable_args=rargs)
+            # Don't set up router, etc if we're in full ft mode
+            if not rargs.disable_expert_mask:
+                args = dataclasses.replace(args, routable_args=rargs)
+            else:
+                print("disable_expert_mask is set, this is the full ft baseline")
+                rcfg = None
     else:
         args = ModelArgs.from_name(checkpoint_path.parent.name)
 

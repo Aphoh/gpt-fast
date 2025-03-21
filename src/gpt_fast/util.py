@@ -20,15 +20,26 @@ def load_model(
     device: torch.device,
 ):
     checkpoint = torch.load(str(checkpoint_path), mmap=True, weights_only=True)
-    if model.config.tie_embedding_weights:
-        checkpoint["output.weight"] = checkpoint["tok_embeddings.weight"]
 
     if routable_path is not None:
-        from gpt_fast.ckpt_utils import convert_routable_state_dict
+        # TODO: fix circular imports
+        from gpt_fast.ckpt_utils import (
+            convert_routable_state_dict,
+            convert_full_ft_state_dict,
+        )
 
         routable_ckpt_path = routable_path.with_suffix(".safetensors")
         rstate_dict = safetensors_load_file(str(routable_ckpt_path))
-        checkpoint |= convert_routable_state_dict(model.config, rstate_dict)
+        if model.config.routable_args is None:
+            print(
+                "No routable args found in model config but routable ckpt found, treating as full ft"
+            )
+            checkpoint = convert_full_ft_state_dict(model.config, rstate_dict)
+        else:
+            checkpoint |= convert_routable_state_dict(model.config, rstate_dict)
+
+    if model.config.tie_embedding_weights:
+        checkpoint["output.weight"] = checkpoint["tok_embeddings.weight"]
 
     model.load_state_dict(checkpoint, assign=True)
     model = model.to(dtype=precision, device=device)
