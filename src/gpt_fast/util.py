@@ -26,15 +26,21 @@ def load_model(
         from gpt_fast.ckpt_utils import (
             convert_routable_state_dict,
             convert_full_ft_state_dict,
+            merge_lora_state_dict,
         )
 
         routable_ckpt_path = routable_path.with_suffix(".safetensors")
         rstate_dict = safetensors_load_file(str(routable_ckpt_path))
         if model.config.routable_args is None:
-            print(
-                "No routable args found in model config but routable ckpt found, treating as full ft"
-            )
-            checkpoint = convert_full_ft_state_dict(model.config, rstate_dict)
+            print("No routable args found in model config but routable ckpt found")
+            if any("lora" in k for k in rstate_dict.keys()):
+                print("Lora ckpt found, merging with full ft")
+                checkpoint = merge_lora_state_dict(
+                    model.config, checkpoint, rstate_dict
+                )
+            else:
+                print("No lora keys found, treating as full ft")
+                checkpoint = convert_full_ft_state_dict(model.config, rstate_dict)
         else:
             checkpoint |= convert_routable_state_dict(model.config, rstate_dict)
 

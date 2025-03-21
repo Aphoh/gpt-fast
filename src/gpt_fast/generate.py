@@ -210,7 +210,7 @@ def generate(
     stopping_condition: Optional[StoppingCondition] = None,
 ) -> torch.Tensor:
     """
-    input_ids: [B, S] left padded batch of input ids
+    input_ids: [B, S] right padded batch of input ids
     seqlens: [B] end index of the unpadded input of each batch
     max_seqlen: int maximum sequence length
     max_new_tokens: int maximum number of new tokens to generate
@@ -232,7 +232,8 @@ def generate(
 
     output_len = min(S + max_new_tokens, max_seqlen)
     output_ids = -torch.ones(B, output_len, device=device, dtype=torch.int)
-    output_ids[:, :S] = input_ids
+    for b in range(B):
+        output_ids[b, : seqlens[b]] = input_ids[b, : seqlens[b]]
     prefill_input_pos = torch.arange(S, device=device, dtype=torch.int)[None, :].expand(
         B, S
     )
@@ -294,10 +295,15 @@ def _load_model(
             rcfg = RoutableCfg(args=rargs, **config_dict)
             args = ModelArgs.from_name(rcfg.base_model)
             # Don't set up router, etc if we're in full ft mode
-            if not rargs.disable_expert_mask:
+            is_routed = (not rargs.ident_expert_mask) and (
+                not rargs.disable_expert_mask
+            )
+            if is_routed:
                 args = dataclasses.replace(args, routable_args=rargs)
             else:
-                print("disable_expert_mask is set, this is the full ft baseline")
+                print(
+                    "disable_expert_mask or ident_expert_mask is set this is the full ft/lora"
+                )
                 rcfg = None
     else:
         args = ModelArgs.from_name(checkpoint_path.parent.name)
@@ -393,7 +399,6 @@ def main(
                 stop_strings=batch.stop_words,
             )
             if n_trim != 0:
-                batch.texts.extend(["pad"] * (n_trim))
                 stopping_condition = combine_stopping_conditions(
                     stopping_condition,
                     ignore_batch_inds(
@@ -402,6 +407,8 @@ def main(
                         batch_indices=range(len(batch.texts), batch_size),
                     ),
                 )
+                batch.texts.extend(["pad"] * (n_trim))
+
             device_sync(device=device)
             encoded = tokenize_and_pad(
                 batch.texts,
