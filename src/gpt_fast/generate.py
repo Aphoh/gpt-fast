@@ -4,9 +4,7 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 from dataclasses import dataclass
-import dataclasses
 from functools import partial
-import json
 import time
 from pathlib import Path
 from typing import Optional
@@ -25,8 +23,9 @@ from gpt_fast.stopping import (
     contains_word_stopping_condition,
     ignore_batch_inds,
 )
-from gpt_fast.util import load_model, maybe_compile
-from gpt_fast.model import ModelArgs, RoutableArgs, Transformer
+from gpt_fast.util import maybe_compile
+from gpt_fast.loading import load_model
+from gpt_fast.model import Transformer
 from gpt_fast.tokenizer import detokenize_output_ids, get_tokenizer, tokenize_and_pad
 from gpt_fast.mask_utils import (
     make_prefill_mask,
@@ -286,34 +285,7 @@ def generate(
 def _load_model(
     checkpoint_path, routable_path, device, precision, use_tp
 ) -> tuple[Transformer, Optional[RoutableCfg]]:
-    args: ModelArgs
-    rcfg: Optional[RoutableCfg] = None
-    if routable_path is not None:
-        with open(routable_path) as f:
-            config_dict = json.load(f)
-            rargs = RoutableArgs(**config_dict.pop("args"))
-            rcfg = RoutableCfg(args=rargs, **config_dict)
-            args = ModelArgs.from_name(rcfg.base_model)
-            # Don't set up router, etc if we're in full ft mode
-            is_routed = (not rargs.ident_expert_mask) and (
-                not rargs.disable_expert_mask
-            )
-            if is_routed:
-                args = dataclasses.replace(args, routable_args=rargs)
-            else:
-                print(
-                    "disable_expert_mask or ident_expert_mask is set this is the full ft/lora"
-                )
-                rcfg = None
-    else:
-        args = ModelArgs.from_name(checkpoint_path.parent.name)
-
-    with torch.device("meta"):
-        model = Transformer(args)
-
-    model = load_model(
-        model, checkpoint_path, routable_path, precision=precision, device=device
-    )
+    model, rcfg = load_model(checkpoint_path, routable_path, device, precision)
 
     if use_tp:
         from gpt_fast.tp import apply_tp

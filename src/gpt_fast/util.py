@@ -1,55 +1,13 @@
 import functools
 import itertools
-from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union
 import torch
 from torch import Tensor
-from safetensors.torch import load_file as safetensors_load_file
 from torch.nn.attention.flex_attention import (
     flex_attention,
     BlockMask,
     _score_mod_signature,
 )
-
-
-def load_model(
-    model,
-    checkpoint_path: str,
-    routable_path: Optional[Path],
-    precision: torch.dtype,
-    device: torch.device,
-):
-    checkpoint = torch.load(str(checkpoint_path), mmap=True, weights_only=True)
-
-    if routable_path is not None:
-        # TODO: fix circular imports
-        from gpt_fast.ckpt_utils import (
-            convert_routable_state_dict,
-            convert_full_ft_state_dict,
-            merge_lora_state_dict,
-        )
-
-        routable_ckpt_path = routable_path.with_suffix(".safetensors")
-        rstate_dict = safetensors_load_file(str(routable_ckpt_path))
-        if model.config.routable_args is None:
-            print("No routable args found in model config but routable ckpt found")
-            if any("lora" in k for k in rstate_dict.keys()):
-                print("Lora ckpt found, merging with full ft")
-                checkpoint = merge_lora_state_dict(
-                    model.config, checkpoint, rstate_dict
-                )
-            else:
-                print("No lora keys found, treating as full ft")
-                checkpoint = convert_full_ft_state_dict(model.config, rstate_dict)
-        else:
-            checkpoint |= convert_routable_state_dict(model.config, rstate_dict)
-
-    if model.config.tie_embedding_weights:
-        checkpoint["output.weight"] = checkpoint["tok_embeddings.weight"]
-
-    model.load_state_dict(checkpoint, assign=True)
-    model = model.to(dtype=precision, device=device)
-    return model
 
 
 def input_pos_from_start_inds(start_inds: torch.Tensor, seq_len: int) -> torch.Tensor:
