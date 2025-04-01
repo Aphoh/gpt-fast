@@ -113,7 +113,10 @@ class Transformer(nn.Module):
             expert_inds.append(inds_i)
         x = self.norm(x)
         logits = self.output(x)
-        return logits, torch.stack(expert_inds, dim=1)
+        expert_inds = torch.stack(expert_inds)
+        outs = [torch.zeros_like(expert_inds) for _ in range(torch.distributed.get_world_size())]
+        expert_inds = torch.distributed.all_gather(outs, expert_inds)
+        return logits, expert_inds
 
     @classmethod
     def from_name(cls, name: str):
@@ -201,7 +204,7 @@ class ConditionalFeedForward(nn.Module):
         x1 = F.silu(torch.einsum('ti,taoi -> tao', x, w1_weights))
         x3 = torch.einsum('ti, taoi -> tao', x, w3_weights)
         expert_outs =  torch.einsum('tao, taio -> tai', (x1 * x3), w2_weights)
-        return expert_outs, expert_indices
+        return expert_outs
 
 
 class MOEFeedForward(nn.Module):
@@ -219,8 +222,8 @@ class MOEFeedForward(nn.Module):
         expert_weights = F.softmax(scores, dim=-1)
         expert_weights, expert_indices = torch.topk(expert_weights, self.num_activated_experts, dim=-1) # [T, A], [T, A]
         expert_weights /= expert_weights.sum(dim=-1, keepdim=True) # [T, A]
-        expert_outs, expert_inds = self.cond_ffn(x, expert_indices)
-        return torch.einsum('tai,ta -> ti', expert_outs, expert_weights), expert_inds
+        expert_outs = self.cond_ffn(x, expert_indices)
+        return torch.einsum('tai,ta -> ti', expert_outs, expert_weights), expert_indices
 
 
 class RMSNorm(nn.Module):
