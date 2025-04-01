@@ -107,11 +107,13 @@ class Transformer(nn.Module):
         freqs_cis = self.freqs_cis[input_pos]
         x = self.tok_embeddings(idx)
 
+        expert_inds = []
         for i, layer in enumerate(self.layers):
-            x = layer(x, input_pos, freqs_cis, mask)
+            x, inds_i = layer(x, input_pos, freqs_cis, mask)
+            expert_inds.append(inds_i)
         x = self.norm(x)
         logits = self.output(x)
-        return logits
+        return logits, torch.stack(expert_inds, dim=1)
 
     @classmethod
     def from_name(cls, name: str):
@@ -128,8 +130,9 @@ class TransformerBlock(nn.Module):
 
     def forward(self, x: Tensor, input_pos: Tensor, freqs_cis: Tensor, mask: Tensor) -> Tensor:
         h = x + self.attention(self.attention_norm(x), freqs_cis, mask, input_pos)
-        out = h + self.block_sparse_moe(self.ffn_norm(h))
-        return out
+        moe_out, expert_inds = self.block_sparse_moe(self.ffn_norm(h))
+        out = h + moe_out
+        return out, expert_inds
 
 
 class Attention(nn.Module):
@@ -198,7 +201,7 @@ class ConditionalFeedForward(nn.Module):
         x1 = F.silu(torch.einsum('ti,taoi -> tao', x, w1_weights))
         x3 = torch.einsum('ti, taoi -> tao', x, w3_weights)
         expert_outs =  torch.einsum('tao, taio -> tai', (x1 * x3), w2_weights)
-        return expert_outs
+        return expert_outs, expert_indices
 
 
 class MOEFeedForward(nn.Module):
@@ -216,8 +219,8 @@ class MOEFeedForward(nn.Module):
         expert_weights = F.softmax(scores, dim=-1)
         expert_weights, expert_indices = torch.topk(expert_weights, self.num_activated_experts, dim=-1) # [T, A], [T, A]
         expert_weights /= expert_weights.sum(dim=-1, keepdim=True) # [T, A]
-        expert_outs = self.cond_ffn(x, expert_indices)
-        return torch.einsum('tai,ta -> ti', expert_outs, expert_weights)
+        expert_outs, expert_inds = self.cond_ffn(x, expert_indices)
+        return torch.einsum('tai,ta -> ti', expert_outs, expert_weights), expert_inds
 
 
 class RMSNorm(nn.Module):
